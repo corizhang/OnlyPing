@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Bot, Box, FileText, Hash, RotateCcw, ShieldCheck, Settings, Sparkles } from 'lucide-react'
+import { Box, CheckCircle2, CircleAlert, FileText, Hash, Info, RotateCcw, ShieldCheck, Settings, Sparkles, WandSparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -12,10 +13,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
 import type { AIConfig, Annotation, Page } from '@/types'
 import { uid, computeNumberStarts } from '@/types'
 import { aiAnnotateFromDescription, aiGenerateDescription, aiSuggestMosaics, aiSuggestNumbers, saveAIConfig } from '@/lib/ai'
-import { renderPageToCanvas } from '@/lib/render'
+import { preparePageForAI } from '@/lib/render'
 
 interface Props {
   config: AIConfig & { demo: boolean }
@@ -34,11 +36,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
 
   /** 隐私模式：AI 调用前先应用本地已有的打码标注，并重编码图片（去除元数据） */
-  const redactForAI = async (page: Page): Promise<Page> => {
-    if (!privacy) return page
-    const canvas = await renderPageToCanvas(page)
-    return { ...page, image: canvas.toDataURL('image/jpeg', 0.85) }
-  }
+  const redactForAI = (page: Page): Promise<Page> => preparePageForAI(page, privacy)
 
   const run = async (key: string, fn: () => Promise<string>) => {
     setBusy(key)
@@ -193,11 +191,17 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
     })
 
   return (
-    <div className="flex h-full w-80 flex-col border-l bg-white">
-      <div className="flex items-center justify-between border-b px-4 py-3">
-        <div className="flex items-center gap-2 font-semibold text-slate-800">
-          <Bot className="h-4 w-4" />
-          AI 助手
+    <aside className="flex h-full w-[20rem] max-w-[30vw] shrink-0 flex-col border-l bg-card">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
+        <div className="flex items-center gap-2.5">
+          <WandSparkles className="size-4 text-muted-foreground" />
+          <div>
+            <div className="text-sm font-semibold tracking-tight text-foreground">智能辅助</div>
+            <div className="text-[10px] text-muted-foreground">标注与步骤说明</div>
+          </div>
+          <Badge variant="outline" className="ml-1 rounded-sm px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+            {config.demo ? '演示' : '已连接'}
+          </Badge>
         </div>
         <Dialog>
           <DialogTrigger asChild>
@@ -260,36 +264,44 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {config.demo && (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            演示模式：以下按钮会生成示例内容，便于体验流程。点击右上角设置配置真实 API Key。
+          <div className="flex gap-2 border-b pb-3 text-[11px] leading-relaxed text-muted-foreground">
+            <Info className="mt-0.5 size-3.5 shrink-0" />
+            <span>演示模式会生成示例内容。配置视觉模型后即可分析真实截图。</span>
           </div>
         )}
         {!config.demo && (
-          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-            提示：截图将发送至你配置的 AI 接口。如含敏感信息，建议开启下方隐私模式或先手动打码。
+          <div className="flex gap-2 border-b pb-3 text-[11px] leading-relaxed text-muted-foreground">
+            <Info className="mt-0.5 size-3.5 shrink-0" />
+            <span>截图将发送至已配置的 AI 接口。包含敏感信息时，建议开启隐私模式。</span>
           </div>
         )}
 
-        <label className="flex cursor-pointer items-start gap-2 text-xs text-slate-600">
-          <input
-            type="checkbox"
-            className="mt-0.5 accent-blue-600"
+        <div className="flex items-start justify-between gap-3 border-b pb-4">
+          <div className="flex gap-2.5">
+            <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <div>
+              <div className="text-xs font-semibold text-foreground">隐私模式</div>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                上传前在本地应用已有打码，并重编码图片。
+              </p>
+            </div>
+          </div>
+          <Switch
+            aria-label="隐私模式"
             checked={privacy}
-            onChange={(e) => {
-              setPrivacy(e.target.checked)
-              localStorage.setItem('mbz-privacy', e.target.checked ? '1' : '0')
+            onCheckedChange={(checked) => {
+              setPrivacy(checked)
+              localStorage.setItem('mbz-privacy', checked ? '1' : '0')
             }}
           />
-          <span>
-            <span className="font-medium">隐私模式</span>：AI 调用前先应用图中已有的打码区域，并重编码图片、去除元数据后再上传
-          </span>
-        </label>
+        </div>
 
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-700">路线 A · 先写说明，AI 帮你标注</div>
-          <p className="text-xs leading-relaxed text-slate-400">
-            先在下方「本页说明文字」里写清楚：点什么按钮、进入什么页面、完成什么动作。AI
-            再根据说明和图片实际内容框选元素、按操作顺序标注序号。
+        <div className="space-y-2.5">
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-semibold text-foreground">按说明生成标注</div>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            根据本页说明，在截图中定位操作区域并添加序号。
           </p>
           <Button
             className="w-full justify-start gap-2"
@@ -297,7 +309,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
             onClick={() => selectedPage && genAnnotateFromNotes(selectedPage)}
           >
             <Box className="h-4 w-4" />
-            {busy === `ann-${selectedPage?.id}` ? '识别中…' : '按说明框选并标注序号'}
+            {busy === `ann-${selectedPage?.id}` ? '识别中…' : '生成本页标注'}
           </Button>
           <Button
             className="w-full justify-start gap-2"
@@ -306,16 +318,18 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
             onClick={runAllAnnotate}
           >
             <Sparkles className="h-4 w-4" />
-            {busy === 'ann-all' ? '批量标注中…' : '批量：按说明标注全部页面'}
+            {busy === 'ann-all' ? '批量标注中…' : '按说明标注全部页面'}
           </Button>
         </div>
 
         <Separator />
 
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-700">路线 B · 先标注，AI 帮你写说明</div>
-          <p className="text-xs leading-relaxed text-slate-400">
-            先手动框选、标好序号，AI 读取图片与标注，产出与序号对应的步骤说明。
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-semibold text-foreground">根据标注生成说明</div>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            整理当前页的标注内容，生成与序号对应的步骤说明。
           </p>
           <Button
             className="w-full justify-start gap-2"
@@ -331,7 +345,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         <Separator />
 
         <div className="space-y-2">
-          <div className="text-xs font-medium text-slate-500">辅助工具</div>
+          <div className="text-xs font-semibold text-foreground">标注辅助</div>
           <Button
             className="w-full justify-start gap-2"
             variant="outline"
@@ -355,17 +369,17 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         <Separator />
 
         <div className="space-y-2">
-          <div className="text-xs font-medium text-slate-500">批量处理（路线 B）</div>
+          <div className="text-xs font-semibold text-foreground">批量生成说明</div>
           <Button
             className="w-full justify-start gap-2"
             disabled={!pages.length || !!busy}
             onClick={runAll}
           >
             <Sparkles className="h-4 w-4" />
-            {busy === 'all' ? '处理中…' : `一键生成全部 ${pages.length} 页说明`}
+            {busy === 'all' ? '处理中…' : `生成全部 ${pages.length} 页说明`}
           </Button>
-          <p className="text-xs text-slate-400">
-            按页面顺序逐张分析截图与标注，并结合上一步说明保持上下文连贯。
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            按页面顺序生成，并参考前一页的说明保持连贯。
           </p>
           {failures && !busy && (
             <Button
@@ -382,18 +396,20 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
 
         {status && (
           <div
-            className={`rounded-md border px-3 py-2 text-xs leading-relaxed ${
+            role="status"
+            className={`flex items-start gap-2 border-l-2 px-3 py-2 text-xs leading-relaxed ${
               status.kind === 'ok'
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
                 : status.kind === 'err'
-                  ? 'border-red-200 bg-red-50 text-red-600'
-                  : 'border-slate-200 bg-slate-50 text-slate-600'
+                  ? 'border-destructive/20 bg-destructive/5 text-destructive'
+                  : 'border-border bg-muted/50 text-muted-foreground'
             }`}
           >
+            {status.kind === 'ok' ? <CheckCircle2 className="mt-0.5 size-4 shrink-0" /> : status.kind === 'err' ? <CircleAlert className="mt-0.5 size-4 shrink-0" /> : <Info className="mt-0.5 size-4 shrink-0" />}
             {status.text}
           </div>
         )}
       </div>
-    </div>
+    </aside>
   )
 }

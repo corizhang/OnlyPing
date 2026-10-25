@@ -110,7 +110,7 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 /** 生成本页说明时可携带的标注上下文（序号使用全局累计编号） */
 function annotationContext(page: Page, numberStart: number): string {
   const numbers = page.annotations.filter((a) => a.kind === 'number')
-  const boxes = page.annotations.filter((a) => a.kind === 'box')
+  const boxes = page.annotations.filter((a) => a.kind === 'box' || a.kind === 'ellipse' || a.kind === 'highlight')
   const parts: string[] = []
   if (numbers.length) {
     const pos = numbers

@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Box,
+  Circle,
+  Highlighter,
+  EyeOff,
+  TextCursorInput,
+  Minus,
+  Pencil,
+  MessageSquareQuote,
+  Search,
   Download,
   Eye,
   FileDown,
@@ -9,7 +17,6 @@ import {
   ShieldCheck,
   Type,
   Hash,
-  FileUp,
   ZoomIn,
   ZoomOut,
   Crop,
@@ -23,6 +30,9 @@ import {
   ShieldAlert,
   CircleAlert,
   Info,
+  BookOpen,
+  Save,
+  FolderOpen,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -36,6 +46,13 @@ import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Separator } from '@/components/ui/separator'
+import { Slider } from '@/components/ui/slider'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Toaster } from '@/components/ui/sonner'
+import { toast } from 'sonner'
 import AIPanel from '@/components/AIPanel'
 import CanvasEditor from '@/components/CanvasEditor'
 import ExportPreview from '@/components/ExportPreview'
@@ -46,11 +63,28 @@ import { rectCoverage, runConsistencyChecks, type CheckIssue } from '@/lib/check
 import { idbGet, idbSet, validateAutosave } from '@/lib/db'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
-import { downloadPageImage, loadImage } from '@/lib/render'
+import { downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, Tool } from '@/types'
 import { ARROW_DEFAULT_WIDTH, computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_DEFAULT_TILE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
 const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#2563eb', '#7c3aed', '#111827']
+const TOOL_SHORTCUTS: Record<string, Tool> = {
+  v: 'select',
+  b: 'box',
+  n: 'number',
+  a: 'arrow',
+  m: 'mosaic',
+  t: 'text',
+  e: 'ellipse',
+  h: 'highlight',
+  r: 'redact',
+  g: 'text-box',
+  l: 'line',
+  p: 'freehand',
+  q: 'callout',
+  z: 'magnifier',
+  c: 'crop',
+}
 
 /** 从 localStorage 读取并校验 JSON，损坏时返回 null */
 const loadJSON = <T,>(key: string, guard: (v: unknown) => v is T): T | null => {
@@ -88,6 +122,7 @@ const checkSignature = (t: string, pgs: Page[], f: ExportFooter) =>
 
 export default function Home() {
   const [title, setTitle] = useState('活动参与流程明白纸')
+  const projectFileRef = useRef<HTMLInputElement>(null)
   const [pages, setPages] = useState<Page[]>([])
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null)
   const [tool, setTool] = useState<Tool>('select')
@@ -110,6 +145,7 @@ export default function Home() {
   const [exportStyle, setExportStyle] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
   const [exportFooter, setExportFooter] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
   const [saveNote, setSaveNote] = useState('')
+  const [storageReady, setStorageReady] = useState(false)
   // 一致性检查
   const [issues, setIssues] = useState<CheckIssue[]>([])
   const [checkOpen, setCheckOpen] = useState(false)
@@ -193,6 +229,7 @@ export default function Home() {
               ? `已恢复 ${new Date(restored.savedAt).toLocaleTimeString()} 的自动保存`
               : '已恢复上次的自动保存'
           )
+          setStorageReady(true)
           return
         }
         // 迁移旧的 localStorage 存档
@@ -211,8 +248,12 @@ export default function Home() {
           }
           localStorage.removeItem('mbz-autosave')
         }
+        setStorageReady(true)
       } catch {
-        if (!cancelled) setSaveNote('读取自动存档失败')
+        if (!cancelled) {
+          setSaveNote('读取自动存档失败')
+          setStorageReady(true)
+        }
       }
     })()
     return () => {
@@ -238,6 +279,7 @@ export default function Home() {
   // AI 隐私扫描核心：逐页识别疑似未打码的隐私内容（已有打码覆盖 ≥50% 的自动跳过）
   const collectAiPrivacyIssues = async (): Promise<CheckIssue[]> => {
     const found: CheckIssue[] = []
+    const privacyMode = localStorage.getItem('mbz-privacy') === '1'
     for (let i = 0; i < pages.length; i++) {
       const p = pages[i]
       setAiScanProgress(`正在扫描 ${i + 1}/${pages.length} 页…`)
@@ -245,7 +287,8 @@ export default function Home() {
         const mosaics = p.annotations
           .filter((a) => a.kind === 'mosaic')
           .map((a) => ({ x: a.x / p.width, y: a.y / p.height, w: a.w / p.width, h: a.h / p.height }))
-        const results = await aiPrivacyScanPage(aiConfig, p, mosaics)
+        const pageForAI = await preparePageForAI(p, privacyMode)
+        const results = await aiPrivacyScanPage(aiConfig, pageForAI, mosaics)
         for (const r of results) {
           if (rectCoverage(r.region, mosaics) >= 0.5) continue
           found.push({
@@ -294,10 +337,11 @@ export default function Home() {
       prev.map((p) => ({
         ...p,
         annotations: p.annotations.map((a) => {
-          if (a.kind === 'box') return { ...a, color: annStyle.color }
+          if (a.kind === 'box' || a.kind === 'ellipse' || a.kind === 'highlight' || a.kind === 'line' || a.kind === 'freehand' || a.kind === 'callout') return { ...a, color: annStyle.color }
           if (a.kind === 'text') return { ...a, color: annStyle.color, size: annStyle.textSize }
           if (a.kind === 'number') return { ...a, r: annStyle.numberR }
-          return { ...a, tile: annStyle.mosaicTile }
+          if (a.kind === 'mosaic') return { ...a, tile: annStyle.mosaicTile }
+          return a
         }),
       }))
     )
@@ -316,25 +360,20 @@ export default function Home() {
 
   const deletePreset = (id: string) => setPresets((prev) => prev.filter((p) => p.id !== id))
 
-  // 自动保存：每 30 秒 + 页面隐藏/关闭前写入 IndexedDB；关闭前若有内容则弹确认提醒
+  // 内容变更后短暂防抖保存，另有定时与页面隐藏时保存作为兜底。
   useEffect(() => {
-    let saving = false
+    if (!storageReady) return
     const save = () => {
-      if (saving) return
-      saving = true
       idbSet({ title, pages, exportStyle, exportFooter, savedAt: Date.now() })
         .then(() => setSaveNote(`已自动保存 ${new Date().toLocaleTimeString()}`))
         .catch(() => setSaveNote('自动保存失败（存储空间不足），请用「保存项目」导出 JSON'))
-        .finally(() => {
-          saving = false
-        })
     }
+    const debounce = setTimeout(save, 1000)
     const timer = setInterval(save, 30000)
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') save()
     }
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      save()
       if (pages.length) {
         e.preventDefault()
         e.returnValue = ''
@@ -343,26 +382,40 @@ export default function Home() {
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
+      clearTimeout(debounce)
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('beforeunload', onBeforeUnload)
     }
-  }, [title, pages, exportStyle, exportFooter])
+  }, [title, pages, exportStyle, exportFooter, storageReady])
 
   // Ctrl+Z / Ctrl+Y 撤销重做
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return
-      const target = e.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+      const target = e.target as HTMLElement | null
+      const editing = !!target && (
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) ||
+        target.isContentEditable ||
+        !!target.closest('[role="textbox"]')
+      )
+      if (editing) return
       const key = e.key.toLowerCase()
-      if (key === 'z') {
+      if (e.ctrlKey || e.metaKey) {
+        if (key === 'z') {
+          e.preventDefault()
+          if (e.shiftKey) redo()
+          else undo()
+        } else if (key === 'y') {
+          e.preventDefault()
+          redo()
+        }
+        return
+      }
+      if (e.altKey || e.shiftKey || e.repeat) return
+      const nextTool = TOOL_SHORTCUTS[key]
+      if (nextTool) {
         e.preventDefault()
-        if (e.shiftKey) redo()
-        else undo()
-      } else if (key === 'y') {
-        e.preventDefault()
-        redo()
+        setTool(nextTool)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -374,9 +427,7 @@ export default function Home() {
     const onPaste = (e: ClipboardEvent) => {
       if (!e.clipboardData?.files?.length) return
       e.preventDefault()
-      filesToPages(e.clipboardData.files).then((imported) => {
-        if (imported.length) addPages(imported)
-      })
+      void importFiles(e.clipboardData.files)
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
@@ -385,16 +436,14 @@ export default function Home() {
   const importDropped = (e: React.DragEvent) => {
     e.preventDefault()
     if (!e.dataTransfer.files?.length) return
-    filesToPages(e.dataTransfer.files).then((imported) => {
-      if (imported.length) addPages(imported)
-    })
+    void importFiles(e.dataTransfer.files)
   }
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
   const numberStarts = computeNumberStarts(pages)
   const selectedAnn = selectedPage?.annotations.find((a) => a.id === selectedAnnId) ?? null
 
-  const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number }) => {
+  const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number; zoom?: number }) => {
     if (!selectedPage || !selectedAnnId) return
     updatePage(selectedPage.id, {
       annotations: selectedPage.annotations.map((a) =>
@@ -409,6 +458,26 @@ export default function Home() {
   const addPages = (newPages: Page[]) => {
     commitPages((prev) => [...prev, ...newPages])
     if (!selectedPageId && newPages.length) setSelectedPageId(newPages[0].id)
+  }
+
+  const importFiles = async (files: Iterable<File>) => {
+    const result = await filesToPages(files)
+    if (result.pages.length) addPages(result.pages)
+    if (result.failures.length) {
+      const details = result.failures.slice(0, 3).map((f) => `${f.name}：${f.reason}`).join('\n')
+      const rest = result.failures.length > 3 ? `\n另有 ${result.failures.length - 3} 个文件失败` : ''
+      toast.error(`成功导入 ${result.pages.length} 张，${result.failures.length} 张图片读取失败`, {
+        description: `${details}${rest}`,
+        duration: 10000,
+      })
+    }
+    if (result.skipped.length) {
+      const names = result.skipped.slice(0, 3).join('、')
+      const details = result.skipped.length > 3
+        ? `${names}等 ${result.skipped.length} 个非图片文件`
+        : `${names}：不是图片文件`
+      toast.warning(`已跳过 ${result.skipped.length} 个文件`, { description: details, duration: 8000 })
+    }
   }
 
   const movePage = (id: string, dir: -1 | 1) => {
@@ -435,11 +504,17 @@ export default function Home() {
       if (nx < -40 || ny < -40 || nx > r.w + 40 || ny > r.h + 40) return null
       return { ...a, x: nx, y: ny }
     }
-    if (a.kind === 'arrow') {
+    if (a.kind === 'arrow' || a.kind === 'line') {
       const inside = (px: number, py: number) =>
         px >= r.x - 40 && py >= r.y - 40 && px <= r.x + r.w + 40 && py <= r.y + r.h + 40
       if (!inside(a.x1, a.y1) && !inside(a.x2, a.y2)) return null
       return { ...a, x1: a.x1 - r.x, y1: a.y1 - r.y, x2: a.x2 - r.x, y2: a.y2 - r.y }
+    }
+    if (a.kind === 'freehand') {
+      const xs = a.points.map((p) => p.x)
+      const ys = a.points.map((p) => p.y)
+      if (Math.max(...xs) < r.x || Math.min(...xs) > r.x + r.w || Math.max(...ys) < r.y || Math.min(...ys) > r.y + r.h) return null
+      return { ...a, points: a.points.map((p) => ({ x: p.x - r.x, y: p.y - r.y })) }
     }
     const x1 = Math.max(a.x, r.x)
     const y1 = Math.max(a.y, r.y)
@@ -559,14 +634,22 @@ export default function Home() {
     reader.readAsText(file)
   }
 
-  const TOOLS: { value: Tool; icon: React.ReactNode; label: string }[] = [
-    { value: 'select', icon: <MousePointer2 className="h-4 w-4" />, label: '选择/移动' },
-    { value: 'box', icon: <Box className="h-4 w-4" />, label: '画框' },
-    { value: 'number', icon: <Hash className="h-4 w-4" />, label: '序号' },
-    { value: 'arrow', icon: <ArrowUpRight className="h-4 w-4" />, label: '箭头' },
-    { value: 'mosaic', icon: <ShieldCheck className="h-4 w-4" />, label: '打码' },
-    { value: 'text', icon: <Type className="h-4 w-4" />, label: '文字' },
-    { value: 'crop', icon: <Crop className="h-4 w-4" />, label: '裁剪' },
+  const TOOLS: { value: Tool; icon: React.ReactNode; label: string; shortcut: string }[] = [
+    { value: 'select', icon: <MousePointer2 className="h-4 w-4" />, label: '选择/移动', shortcut: 'V' },
+    { value: 'box', icon: <Box className="h-4 w-4" />, label: '画框', shortcut: 'B' },
+    { value: 'ellipse', icon: <Circle className="h-4 w-4" />, label: '椭圆', shortcut: 'E' },
+    { value: 'highlight', icon: <Highlighter className="h-4 w-4" />, label: '高亮', shortcut: 'H' },
+    { value: 'redact', icon: <EyeOff className="h-4 w-4" />, label: '遮挡', shortcut: 'R' },
+    { value: 'number', icon: <Hash className="h-4 w-4" />, label: '序号', shortcut: 'N' },
+    { value: 'arrow', icon: <ArrowUpRight className="h-4 w-4" />, label: '箭头', shortcut: 'A' },
+    { value: 'line', icon: <Minus className="h-4 w-4" />, label: '直线', shortcut: 'L' },
+    { value: 'freehand', icon: <Pencil className="h-4 w-4" />, label: '自由画笔', shortcut: 'P' },
+    { value: 'callout', icon: <MessageSquareQuote className="h-4 w-4" />, label: '说明气泡', shortcut: 'Q' },
+    { value: 'magnifier', icon: <Search className="h-4 w-4" />, label: '局部放大', shortcut: 'Z' },
+    { value: 'mosaic', icon: <ShieldCheck className="h-4 w-4" />, label: '打码', shortcut: 'M' },
+    { value: 'text', icon: <Type className="h-4 w-4" />, label: '文字', shortcut: 'T' },
+    { value: 'text-box', icon: <TextCursorInput className="h-4 w-4" />, label: '文字框', shortcut: 'G' },
+    { value: 'crop', icon: <Crop className="h-4 w-4" />, label: '裁剪', shortcut: 'C' },
   ]
 
   // 健康状态灯：未检查=灰 / 内容已改=黄闪感 / 有警告=橙 / 仅提示=蓝 / 通过=绿
@@ -583,23 +666,33 @@ export default function Home() {
           : { cls: 'bg-emerald-500', title: '检查通过' }
 
   return (
-    <div className="flex h-screen flex-col bg-slate-50 text-slate-800">
+    <div className="flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground">
+      <Toaster richColors position="bottom-right" />
       {/* 顶栏 */}
-      <header className="flex h-14 items-center justify-between border-b bg-white px-4">
-        <div className="flex items-center gap-3">
-          <span className="text-base font-bold">明白纸制作工具</span>
-          <input
+      <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b bg-card px-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+            <BookOpen className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold leading-tight tracking-tight">明白纸工作台</div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground">OnlyPing</div>
+          </div>
+          <Separator orientation="vertical" className="mx-1 h-8" />
+          <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-64 rounded border border-transparent bg-transparent px-2 py-1 text-sm text-slate-600 hover:border-slate-200 focus:border-blue-400 focus:outline-none"
+            aria-label="项目标题"
+            className="h-9 w-52 border-transparent bg-transparent px-2 text-sm font-medium shadow-none hover:border-input focus-visible:bg-background"
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           <Button
             variant="ghost"
-            size="icon"
-            className="h-8 w-8"
+            size="icon-sm"
+            className="text-muted-foreground"
             title="撤销（Ctrl+Z）"
+            aria-label="撤销"
             disabled={!undoStack.current.length}
             onClick={undo}
           >
@@ -607,40 +700,43 @@ export default function Home() {
           </Button>
           <Button
             variant="ghost"
-            size="icon"
-            className="h-8 w-8"
+            size="icon-sm"
+            className="text-muted-foreground"
             title="重做（Ctrl+Y）"
+            aria-label="重做"
             disabled={!redoStack.current.length}
             onClick={redo}
           >
             <Redo2 className="h-4 w-4" />
           </Button>
           {saveNote && (
-            <span
-              className={`text-[11px] ${saveNote.includes('失败') ? 'text-amber-600' : 'text-slate-400'}`}
-            >
+            <span className={`mr-1 hidden items-center gap-1.5 px-2 py-1 text-[11px] font-medium xl:inline-flex ${saveNote.includes('失败') ? 'text-amber-700' : 'text-emerald-700'}`}>
+              <span className={`size-1.5 rounded-full ${saveNote.includes('失败') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
               {saveNote}
             </span>
           )}
-          <Button variant="outline" size="sm" onClick={saveProject}>
-            <FileUp className="mr-1.5 h-4 w-4" />
+          <Button variant="outline" size="sm" className="h-9 bg-background" onClick={saveProject}>
+            <Save className="size-4" />
             保存项目
           </Button>
-          <label className="cursor-pointer">
-            <input
-              type="file"
-              accept="application/json"
-              className="hidden"
-              onChange={(e) => e.target.files?.[0] && loadProject(e.target.files[0])}
-            />
-            <span className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-3 text-sm hover:bg-slate-100">
-              打开项目
-            </span>
-          </label>
+          <input
+            ref={projectFileRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.[0]) loadProject(e.target.files[0])
+              e.currentTarget.value = ''
+            }}
+          />
+          <Button variant="outline" size="sm" className="h-9 bg-background" onClick={() => projectFileRef.current?.click()}>
+            <FolderOpen className="size-4" />
+            打开项目
+          </Button>
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="outline" size="sm">
-                <Type className="mr-1.5 h-4 w-4" />
+              <Button variant="outline" size="sm" className="h-9 bg-background">
+                <Type className="size-4" />
                 导出样式
               </Button>
             </PopoverTrigger>
@@ -656,15 +752,13 @@ export default function Home() {
                 ).map(({ key, label }) => (
                   <label key={key} className="flex items-center gap-2 text-xs text-slate-500">
                     {label}
-                    <input
-                      type="range"
+                    <Slider
                       min={key === 'notes' ? 12 : 16}
                       max={key === 'notes' ? 32 : 56}
-                      value={exportStyle[key]}
-                      onChange={(e) =>
-                        setExportStyle((s) => ({ ...s, [key]: Number(e.target.value) }))
-                      }
-                      className="h-1.5 flex-1 cursor-pointer accent-blue-600"
+                      value={[exportStyle[key]]}
+                      onValueChange={([value]) => setExportStyle((s) => ({ ...s, [key]: value }))}
+                      className="mx-1 flex-1"
+                      aria-label={`${label}字号`}
                     />
                     <span className="w-6 text-right tabular-nums">{exportStyle[key]}</span>
                   </label>
@@ -692,36 +786,36 @@ export default function Home() {
                       placeholder="版本号，如 V1.0"
                       className="h-8 flex-1 text-xs"
                     />
-                    <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-slate-500">
-                      <input
-                        type="checkbox"
-                        className="accent-blue-600"
+                    <div className="flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+                      <Checkbox
+                        id="footer-show-date"
+                        className="size-4"
                         checked={exportFooter.showDate}
-                        onChange={(e) => setExportFooter((f) => ({ ...f, showDate: e.target.checked }))}
+                        onCheckedChange={(checked) => setExportFooter((f) => ({ ...f, showDate: checked === true }))}
                       />
-                      显示日期
-                    </label>
+                      <Label htmlFor="footer-show-date" className="cursor-pointer font-normal">显示日期</Label>
+                    </div>
                   </div>
                 </div>
               </div>
             </PopoverContent>
           </Popover>
-          <Button variant="outline" size="sm" disabled={!pages.length} onClick={runChecks}>
+          <Button variant="outline" size="sm" className="h-9 bg-background" disabled={!pages.length} onClick={runChecks}>
             <span
               className={`mr-1.5 h-2 w-2 rounded-full ${health.cls}`}
               title={health.title}
             />
-            <ListChecks className="mr-1.5 h-4 w-4" />
+            <ListChecks className="size-4" />
             一致性检查{issues.length ? `（${issues.length}）` : ''}
           </Button>
-          <Button variant="outline" size="sm" disabled={!pages.length} onClick={() => setPreviewOpen(true)}>
-            <Eye className="mr-1.5 h-4 w-4" />
+          <Button variant="outline" size="sm" className="h-9 bg-background" disabled={!pages.length} onClick={() => setPreviewOpen(true)}>
+            <Eye className="size-4" />
             预览导出
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="sm" disabled={exporting || !pages.length}>
-                <Download className="mr-1.5 h-4 w-4" />
+              <Button size="sm" className="h-9 px-4" disabled={exporting || !pages.length}>
+                <Download className="size-4" />
                 {exporting ? '导出中…' : '导出'}
               </Button>
             </DropdownMenuTrigger>
@@ -747,59 +841,75 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <PageList
           pages={pages}
           selectedId={selectedPageId}
+          onImportFiles={importFiles}
           onSelect={(id) => {
             setSelectedPageId(id)
             setSelectedAnnId(null)
           }}
-          onAdd={addPages}
           onMove={movePage}
           onRemove={removePage}
         />
 
         {/* 中间编辑区 */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 border-b bg-white px-4 py-2">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-card px-3 py-2">
             <ToggleGroup
               type="single"
               value={tool}
               onValueChange={(v) => v && setTool(v as Tool)}
-              className="gap-1"
+              className="gap-0.5 rounded-md bg-muted p-0.5"
             >
               {TOOLS.map((t) => (
-                <ToggleGroupItem
-                  key={t.value}
-                  value={t.value}
-                  aria-label={t.label}
-                  title={t.label}
-                  className="h-8 w-8 p-0 data-[state=on]:bg-blue-100 data-[state=on]:text-blue-700"
-                >
-                  {t.icon}
-                </ToggleGroupItem>
+                <Tooltip key={t.value}>
+                  <TooltipTrigger asChild>
+                    <ToggleGroupItem
+                      value={t.value}
+                      aria-label={t.label}
+                      title={`${t.label}（${t.shortcut}）`}
+                      className="size-8 rounded p-0 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground aria-checked:bg-foreground aria-checked:text-background aria-checked:shadow-sm"
+                    >
+                      {t.icon}
+                    </ToggleGroupItem>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <span className="flex items-center gap-3">
+                      {t.label}
+                      <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px]">{t.shortcut}</kbd>
+                    </span>
+                  </TooltipContent>
+                </Tooltip>
               ))}
             </ToggleGroup>
-            <div className="flex items-center gap-1.5">
+            <Separator orientation="vertical" className="hidden h-8 sm:block" />
+            <div className="flex items-center gap-1 rounded-md border bg-background px-1 py-0.5">
               {COLORS.map((c) => (
-                <button
+                <Button
                   key={c}
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
                   onClick={() => setColor(c)}
-                  className={`h-5 w-5 rounded-full border-2 ${
-                    color === c ? 'border-slate-800' : 'border-transparent'
+                  aria-label={`标注颜色 ${c}`}
+                  aria-pressed={color === c}
+                  className={`size-7 rounded-md p-0 ${
+                    color === c ? 'bg-accent ring-1 ring-foreground/40' : 'hover:bg-muted'
                   }`}
-                  style={{ background: c }}
-                  title={c}
-                />
+                  title={`标注颜色 ${c}`}
+                >
+                  <span className={`size-3.5 rounded-full ring-1 ring-black/10 ${color === c ? 'scale-110' : ''}`} style={{ background: c }} />
+                </Button>
               ))}
             </div>
 
             {/* 样式模板：新建标注默认样式 + 预设管理 */}
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 px-2 text-xs" title="样式模板">
-                  <Palette className="mr-1.5 h-4 w-4" />
+                <Button variant="outline" size="sm" className="h-9 bg-background" title="样式模板">
+                  <Palette className="size-4" />
                   样式模板
                 </Button>
               </PopoverTrigger>
@@ -817,13 +927,13 @@ export default function Home() {
                   ).map(({ key, label, min, max }) => (
                     <label key={key} className="flex items-center gap-2 text-xs text-slate-500">
                       {label}
-                      <input
-                        type="range"
+                      <Slider
                         min={min}
                         max={max}
-                        value={annStyle[key]}
-                        onChange={(e) => setAnnStyle((s) => ({ ...s, [key]: Number(e.target.value) }))}
-                        className="h-1.5 flex-1 cursor-pointer accent-blue-600"
+                        value={[annStyle[key]]}
+                        onValueChange={([value]) => setAnnStyle((s) => ({ ...s, [key]: value }))}
+                        className="mx-1 flex-1"
+                        aria-label={label}
                       />
                       <span className="w-8 text-right tabular-nums">
                         {annStyle[key]}
@@ -869,29 +979,41 @@ export default function Home() {
                             key={p.id}
                             className="group flex items-center gap-2 rounded border border-slate-200 px-2 py-1.5"
                           >
-                            <button
-                              className="h-4 w-4 shrink-0 rounded-full border border-slate-300"
-                              style={{ background: p.color }}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`套用样式预设：${p.name}`}
+                              className="size-7 shrink-0 rounded-md p-0"
                               title="套用此预设"
                               onClick={() => applyPreset(p)}
-                            />
-                            <button
-                              className="min-w-0 flex-1 truncate text-left text-xs text-slate-600 hover:text-blue-600"
+                            >
+                              <span className="size-3.5 rounded-full border border-black/10" style={{ background: p.color }} />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 min-w-0 flex-1 justify-start truncate px-1 text-left text-xs font-normal text-muted-foreground hover:text-primary"
                               title={`套用：序号 ${p.numberR} · 文字 ${p.textSize}px · 打码 ${p.mosaicTile}px`}
                               onClick={() => applyPreset(p)}
                             >
                               {p.name}
-                              <span className="ml-1.5 text-[10px] text-slate-400">
+                              <span className="ml-1.5 shrink-0 text-[10px] text-muted-foreground/75">
                                 序{p.numberR} · 字{p.textSize} · 码{p.mosaicTile}
                               </span>
-                            </button>
-                            <button
-                              className="text-slate-300 hover:text-red-500 group-hover:text-slate-400"
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`删除样式预设：${p.name}`}
+                              className="size-7 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                               title="删除预设"
                               onClick={() => deletePreset(p.id)}
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
+                              <Trash2 className="size-3.5" />
+                            </Button>
                           </div>
                         ))}
                       </div>
@@ -905,13 +1027,13 @@ export default function Home() {
             {selectedAnn?.kind === 'text' && (
               <label className="flex items-center gap-2 text-xs text-slate-500">
                 字号
-                <input
-                  type="range"
+                <Slider
                   min={16}
                   max={80}
-                  value={selectedAnn.size ?? 26}
-                  onChange={(e) => updateAnnSize({ size: Number(e.target.value) })}
-                  className="h-1.5 w-28 cursor-pointer accent-blue-600"
+                  value={[selectedAnn.size ?? 26]}
+                  onValueChange={([size]) => updateAnnSize({ size })}
+                  className="w-28"
+                  aria-label="文字字号"
                 />
                 <span className="w-6 tabular-nums">{selectedAnn.size ?? 26}</span>
               </label>
@@ -919,27 +1041,27 @@ export default function Home() {
             {selectedAnn?.kind === 'number' && (
               <label className="flex items-center gap-2 text-xs text-slate-500">
                 序号大小
-                <input
-                  type="range"
+                <Slider
                   min={12}
                   max={56}
-                  value={selectedAnn.r ?? 20}
-                  onChange={(e) => updateAnnSize({ r: Number(e.target.value) })}
-                  className="h-1.5 w-28 cursor-pointer accent-blue-600"
+                  value={[selectedAnn.r ?? 20]}
+                  onValueChange={([r]) => updateAnnSize({ r })}
+                  className="w-28"
+                  aria-label="序号大小"
                 />
                 <span className="w-6 tabular-nums">{selectedAnn.r ?? 20}</span>
               </label>
             )}
-            {selectedAnn?.kind === 'arrow' && (
+            {(selectedAnn?.kind === 'arrow' || selectedAnn?.kind === 'line' || selectedAnn?.kind === 'freehand') && (
               <label className="flex items-center gap-2 text-xs text-slate-500">
-                箭头线宽
-                <input
-                  type="range"
+                {selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
+                <Slider
                   min={2}
                   max={16}
-                  value={selectedAnn.width ?? ARROW_DEFAULT_WIDTH}
-                  onChange={(e) => updateAnnSize({ width: Number(e.target.value) })}
-                  className="h-1.5 w-28 cursor-pointer accent-blue-600"
+                  value={[selectedAnn.width ?? ARROW_DEFAULT_WIDTH]}
+                  onValueChange={([width]) => updateAnnSize({ width })}
+                  className="w-28"
+                  aria-label={selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
                 />
                 <span className="w-6 tabular-nums">{selectedAnn.width ?? ARROW_DEFAULT_WIDTH}</span>
               </label>
@@ -947,15 +1069,22 @@ export default function Home() {
             {selectedAnn?.kind === 'mosaic' && (
               <label className="flex items-center gap-2 text-xs text-slate-500">
                 打码强度
-                <input
-                  type="range"
+                <Slider
                   min={MOSAIC_MIN_TILE}
                   max={MOSAIC_MAX_TILE}
-                  value={selectedAnn.tile ?? MOSAIC_DEFAULT_TILE}
-                  onChange={(e) => updateAnnSize({ tile: Number(e.target.value) })}
-                  className="h-1.5 w-28 cursor-pointer accent-blue-600"
+                  value={[selectedAnn.tile ?? MOSAIC_DEFAULT_TILE]}
+                  onValueChange={([tile]) => updateAnnSize({ tile })}
+                  className="w-28"
+                  aria-label="打码强度"
                 />
                 <span className="w-8 tabular-nums">{selectedAnn.tile ?? MOSAIC_DEFAULT_TILE}px</span>
+              </label>
+            )}
+            {selectedAnn?.kind === 'magnifier' && (
+              <label className="flex items-center gap-2 text-xs text-slate-500">
+                放大倍率
+                <Slider min={1.5} max={4} step={0.1} value={[selectedAnn.zoom]} onValueChange={([zoom]) => updateAnnSize({ zoom })} className="w-28" aria-label="放大倍率" />
+                <span className="w-8 tabular-nums">{selectedAnn.zoom.toFixed(1)}×</span>
               </label>
             )}
             {selectedAnn?.kind === 'mosaic' && (
@@ -975,28 +1104,32 @@ export default function Home() {
             )}
 
             {/* 画布缩放 */}
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ml-auto flex items-center gap-0.5 rounded-md border bg-background p-0.5">
               <Button
                 variant="ghost"
-                size="icon"
-                className="h-7 w-7"
+                size="icon-sm"
+                className="text-muted-foreground"
                 title="缩小（Ctrl+滚轮）"
+                aria-label="缩小画布"
                 onClick={() => setZoom((z) => Math.max(0.2, z / 1.2))}
               >
                 <ZoomOut className="h-4 w-4" />
               </Button>
-              <button
-                className="w-14 rounded px-1 text-center text-xs tabular-nums text-slate-500 hover:bg-slate-100"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 min-w-14 px-1 text-xs tabular-nums text-muted-foreground"
                 title="点击恢复 100%"
                 onClick={() => setZoom(1)}
               >
                 {Math.round(zoom * 100)}%
-              </button>
+              </Button>
               <Button
                 variant="ghost"
-                size="icon"
-                className="h-7 w-7"
+                size="icon-sm"
+                className="text-muted-foreground"
                 title="放大（Ctrl+滚轮）"
+                aria-label="放大画布"
                 onClick={() => setZoom((z) => Math.min(3, z * 1.2))}
               >
                 <ZoomIn className="h-4 w-4" />
@@ -1004,7 +1137,7 @@ export default function Home() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 px-2 text-xs"
+                className="h-7 px-2 text-xs text-muted-foreground"
                 title="适应面板宽度"
                 onClick={() => setZoom(1)}
               >
@@ -1017,7 +1150,7 @@ export default function Home() {
           </div>
 
           <div
-            className="flex-1 overflow-auto p-5"
+            className="flex-1 overflow-auto bg-muted/70 p-4"
             onDragOver={(e) => e.preventDefault()}
             onDrop={importDropped}
           >
@@ -1038,25 +1171,27 @@ export default function Home() {
                 onCrop={(rect) => applyCrop(selectedPage, rect)}
               />
             ) : (
-              <div className="flex h-full flex-col items-center justify-center text-slate-400">
-                <ImageIcon className="mb-3 h-10 w-10" />
-                <p className="text-sm">从左侧导入截图，或直接 Ctrl+V 粘贴 / 拖拽图片到此处</p>
-                <p className="mt-1 text-xs">也可以打开已有项目文件</p>
+              <div className="flex h-full min-h-80 flex-col items-center justify-center text-center text-muted-foreground">
+                <ImageIcon className="mb-3 size-6 text-muted-foreground/70" />
+                <p className="text-sm font-medium text-foreground">打开一张截图开始标注</p>
+                <p className="mt-1 text-xs">从左侧添加、粘贴或拖入图片</p>
+                <span className="mt-3 border bg-card px-2 py-1 text-[11px] font-medium">Ctrl + V</span>
               </div>
             )}
           </div>
 
           {/* 本页说明 */}
           {selectedPage && (
-            <div className="border-t bg-white p-3">
-              <div className="mb-1.5 text-xs font-medium text-slate-500">
-                本页说明文字（步骤 {pages.indexOf(selectedPage) + 1}，可由 AI 生成后修改）
+            <div className="border-t bg-card px-4 py-3">
+              <div className="mb-2 flex items-center justify-between text-xs font-medium text-muted-foreground">
+                步骤说明 · 第 {pages.indexOf(selectedPage) + 1} 页
+                <span className="text-[10px]">自动保存</span>
               </div>
               <Textarea
                 value={selectedPage.notes}
                 onChange={(e) => updatePage(selectedPage.id, { notes: e.target.value }, true)}
                 placeholder="例如：打开活动页面后，点击「立即参与」按钮进入报名流程……"
-                className="min-h-[64px] resize-none text-sm"
+                className="min-h-[72px] resize-y bg-background text-sm leading-relaxed"
               />
             </div>
           )}
@@ -1134,18 +1269,18 @@ export default function Home() {
                   ? '逐页识别疑似未打码的姓名/手机号/二维码等'
                   : '请先在右侧 AI 面板配置 API Key'}
             </span>
-            <label
-              className="ml-auto flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-slate-500"
+            <div
+              className="ml-auto flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground"
               title="开启后，导出 Word/PDF/长图前会自动运行 AI 隐私扫描"
             >
-              <input
-                type="checkbox"
-                className="accent-blue-600"
+              <Checkbox
+                id="auto-ai-scan"
+                className="size-4"
                 checked={autoAiScan}
-                onChange={(e) => setAutoAiScan(e.target.checked)}
+                onCheckedChange={(checked) => setAutoAiScan(checked === true)}
               />
-              导出前自动扫描
-            </label>
+              <Label htmlFor="auto-ai-scan" className="cursor-pointer font-normal">导出前自动扫描</Label>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

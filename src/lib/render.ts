@@ -83,6 +83,12 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
       mosaicCanvasRegion(canvas, Math.round(ann.x), Math.round(ann.y), Math.round(ann.w), Math.round(ann.h), ann.tile ?? MOSAIC_DEFAULT_TILE)
     }
   }
+  for (const ann of page.annotations) {
+    if (ann.kind === 'redact') {
+      ctx.fillStyle = ann.color
+      ctx.fillRect(ann.x, ann.y, ann.w, ann.h)
+    }
+  }
 
   const numbers = page.annotations.filter((a) => a.kind === 'number')
   const numIndex = new Map<string, number>()
@@ -99,8 +105,101 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
       ctx.fill()
       ctx.stroke()
       ctx.restore()
+    } else if (ann.kind === 'ellipse') {
+      ctx.save()
+      ctx.strokeStyle = ann.color
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.ellipse(ann.x + ann.w / 2, ann.y + ann.h / 2, Math.abs(ann.w / 2), Math.abs(ann.h / 2), 0, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+    } else if (ann.kind === 'highlight') {
+      ctx.save()
+      ctx.globalAlpha = 0.38
+      ctx.fillStyle = ann.color
+      ctx.fillRect(ann.x, ann.y, ann.w, ann.h)
+      ctx.restore()
+    } else if (ann.kind === 'redact') {
+      ctx.fillStyle = ann.color
+      ctx.fillRect(ann.x, ann.y, ann.w, ann.h)
     } else if (ann.kind === 'arrow') {
       drawArrow(ctx, ann)
+    } else if (ann.kind === 'line') {
+      ctx.save()
+      ctx.strokeStyle = ann.color
+      ctx.lineWidth = ann.width ?? 4
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      ctx.moveTo(ann.x1, ann.y1)
+      ctx.lineTo(ann.x2, ann.y2)
+      ctx.stroke()
+      ctx.restore()
+    } else if (ann.kind === 'freehand') {
+      if (ann.points.length > 1) {
+        ctx.save()
+        ctx.strokeStyle = ann.color
+        ctx.lineWidth = ann.width ?? 4
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
+        ctx.beginPath()
+        ctx.moveTo(ann.points[0].x, ann.points[0].y)
+        ann.points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y))
+        ctx.stroke()
+        ctx.restore()
+      }
+    } else if (ann.kind === 'callout') {
+      ctx.save()
+      const tail = Math.min(18, Math.max(10, ann.w * 0.12))
+      ctx.fillStyle = '#fff'
+      ctx.strokeStyle = ann.color
+      ctx.lineWidth = 2.5
+      ctx.beginPath()
+      ctx.moveTo(ann.x + 12, ann.y + ann.h - 1)
+      ctx.lineTo(ann.x + 8, ann.y + ann.h + tail)
+      ctx.lineTo(ann.x + tail + 16, ann.y + ann.h - 1)
+      ctx.closePath()
+      ctx.fill()
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.roundRect(ann.x, ann.y, ann.w, ann.h, 10)
+      ctx.fill()
+      ctx.stroke()
+      ctx.fillStyle = ann.color
+      ctx.font = '600 16px "PingFang SC", "Microsoft YaHei", sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      const lines = ann.text.split('\n').slice(0, Math.max(1, Math.floor(ann.h / 20)))
+      lines.forEach((line, i) => ctx.fillText(line, ann.x + ann.w / 2, ann.y + ann.h / 2 + (i - (lines.length - 1) / 2) * 20, Math.max(10, ann.w - 16)))
+      ctx.restore()
+    } else if (ann.kind === 'magnifier') {
+      const cx = ann.x + ann.w / 2
+      const cy = ann.y + ann.h / 2
+      const radius = Math.min(ann.w, ann.h) / 2
+      const zoom = Math.min(4, Math.max(1.2, ann.zoom || 2.5))
+      const sourceW = Math.max(1, Math.ceil(ann.w / zoom))
+      const sourceH = Math.max(1, Math.ceil(ann.h / zoom))
+      const snapshot = document.createElement('canvas')
+      snapshot.width = sourceW
+      snapshot.height = sourceH
+      snapshot.getContext('2d')!.drawImage(canvas, cx - sourceW / 2, cy - sourceH / 2, sourceW, sourceH, 0, 0, sourceW, sourceH)
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+      ctx.clip()
+      ctx.drawImage(snapshot, ann.x, ann.y, ann.w, ann.h)
+      ctx.restore()
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius - 1, 0, Math.PI * 2)
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 6
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius - 1, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(31,41,55,0.7)'
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.restore()
     } else if (ann.kind === 'number') {
       const n = (numIndex.get(ann.id) ?? 1) + numberStart
       const r = ann.r ?? 20
@@ -126,6 +225,16 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
       ctx.font = `bold ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
       ctx.textBaseline = 'top'
       ctx.lineJoin = 'round'
+      const textW = Math.max(...lines.map((line) => ctx.measureText(line).width), size * 0.6)
+      if (ann.background) {
+        ctx.fillStyle = '#ffffff'
+        ctx.strokeStyle = '#d1d5db'
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.roundRect(ann.x - 6, ann.y - size - 4, textW + 12, lines.length * lineH + 10, 4)
+        ctx.fill()
+        ctx.stroke()
+      }
       ctx.strokeStyle = 'rgba(255,255,255,0.95)'
       ctx.lineWidth = Math.max(4, size / 4)
       lines.forEach((line, i) => {
@@ -138,6 +247,13 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
     }
   }
   return canvas
+}
+
+/** 隐私模式下，把现有马赛克和标注渲染进图像后再交给 AI。 */
+export async function preparePageForAI(page: Page, privacy: boolean): Promise<Page> {
+  if (!privacy) return page
+  const canvas = await renderPageToCanvas(page)
+  return { ...page, image: canvas.toDataURL('image/jpeg', 0.85) }
 }
 
 /** 渲染单页并导出 PNG 下载 */

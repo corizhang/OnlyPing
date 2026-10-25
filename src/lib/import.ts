@@ -1,6 +1,17 @@
 import type { Page } from '@/types'
 import { uid } from '@/types'
 
+export interface FileImportFailure {
+  name: string
+  reason: string
+}
+
+export interface FileImportResult {
+  pages: Page[]
+  failures: FileImportFailure[]
+  skipped: string[]
+}
+
 /**
  * 把图片文件转为页面对象。
  * 通过 canvas 重编码为 PNG：去除 EXIF 等元数据（拍摄设备、位置、时间等），同时统一格式。
@@ -39,10 +50,19 @@ export function fileToPage(file: File): Promise<Page> {
 }
 
 /** 过滤图片文件并逐个转换；单个失败不阻塞其余 */
-export async function filesToPages(files: Iterable<File>): Promise<Page[]> {
-  const images = Array.from(files).filter((f) => f.type.startsWith('image/'))
+export async function filesToPages(files: Iterable<File>): Promise<FileImportResult> {
+  const allFiles = Array.from(files)
+  const images = allFiles.filter((f) => f.type.startsWith('image/'))
+  const skipped = allFiles.filter((f) => !f.type.startsWith('image/')).map((f) => f.name)
   const results = await Promise.allSettled(images.map(fileToPage))
-  return results
-    .filter((r): r is PromiseFulfilledResult<Page> => r.status === 'fulfilled')
-    .map((r) => r.value)
+  const pages: Page[] = []
+  const failures: FileImportFailure[] = []
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') pages.push(result.value)
+    else failures.push({
+      name: images[index].name,
+      reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
+    })
+  })
+  return { pages, failures, skipped }
 }

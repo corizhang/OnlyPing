@@ -80,7 +80,7 @@ export function validateAutosave(data: unknown): {
   const clean = pages.map((p) => ({
     ...p,
     annotations: p.annotations.filter(
-      (a) => a && typeof (a as { id?: unknown }).id === 'string' && ['box', 'mosaic', 'number', 'arrow', 'text'].includes((a as { kind?: string }).kind ?? '')
+      (a) => a && typeof (a as { id?: unknown }).id === 'string' && ['box', 'ellipse', 'highlight', 'redact', 'mosaic', 'number', 'arrow', 'line', 'freehand', 'callout', 'magnifier', 'text'].includes((a as { kind?: string }).kind ?? '')
     ),
   }))
   return {

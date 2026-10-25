@@ -1,4 +1,4 @@
-export type Tool = 'select' | 'box' | 'number' | 'arrow' | 'mosaic' | 'text' | 'crop'
+export type Tool = 'select' | 'box' | 'ellipse' | 'highlight' | 'redact' | 'number' | 'arrow' | 'line' | 'freehand' | 'callout' | 'magnifier' | 'mosaic' | 'text' | 'text-box' | 'crop'
 
 export interface Rect {
   x: number
@@ -10,6 +10,24 @@ export interface Rect {
 export interface BoxAnnotation extends Rect {
   id: string
   kind: 'box'
+  color: string
+}
+
+export interface EllipseAnnotation extends Rect {
+  id: string
+  kind: 'ellipse'
+  color: string
+}
+
+export interface HighlightAnnotation extends Rect {
+  id: string
+  kind: 'highlight'
+  color: string
+}
+
+export interface RedactAnnotation extends Rect {
+  id: string
+  kind: 'redact'
   color: string
 }
 
@@ -38,6 +56,25 @@ export interface ArrowAnnotation {
   width?: number // 线宽，默认 ARROW_DEFAULT_WIDTH
 }
 
+export interface LineAnnotation {
+  id: string
+  kind: 'line'
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+  width?: number
+}
+
+export interface FreehandAnnotation {
+  id: string
+  kind: 'freehand'
+  points: { x: number; y: number }[]
+  color: string
+  width?: number
+}
+
 export const ARROW_DEFAULT_WIDTH = 6
 
 export interface TextAnnotation {
@@ -48,14 +85,35 @@ export interface TextAnnotation {
   text: string
   color: string
   size?: number // 字号，默认 26
+  background?: boolean
+}
+
+export interface CalloutAnnotation extends Rect {
+  id: string
+  kind: 'callout'
+  text: string
+  color: string
+}
+
+export interface MagnifierAnnotation extends Rect {
+  id: string
+  kind: 'magnifier'
+  zoom: number
 }
 
 export type Annotation =
   | BoxAnnotation
+  | EllipseAnnotation
+  | HighlightAnnotation
+  | RedactAnnotation
   | MosaicAnnotation
   | NumberAnnotation
   | ArrowAnnotation
+  | LineAnnotation
+  | FreehandAnnotation
   | TextAnnotation
+  | CalloutAnnotation
+  | MagnifierAnnotation
 
 export interface Page {
   id: string

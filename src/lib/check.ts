@@ -9,10 +9,18 @@ export interface CheckIssue {
   message: string
 }
 
-/** 提取说明文字中显式引用序号的位置数量（如「1.」「（2）」「①」开头的行） */
+/** 统计说明里的序号引用；支持行首步骤号、圈号，以及「点击2处」等行内写法。 */
 function countNumberRefs(notes: string): number {
-  const re = /^\s*(?:\d{1,2}[.、．)]|[（(]\d{1,2}[)）]|[①-⑩])/gm
-  return (notes.match(re) ?? []).length
+  let count = 0
+  const linePrefix = /^\s*(?:\d{1,2}[.、．)]|[（(]\d{1,2}[)）])\s*/
+  const inlineRefs = /[①-⑳]|(?:序号|第|点击|按|选择|点按|进入|打开|在)\s*[（(]?\d{1,2}[）)]?\s*(?:处|号|步|个|项|位置)/g
+
+  for (const line of notes.split(/\r?\n/)) {
+    const matches = line.match(inlineRefs)
+    if (matches?.length) count += matches.length
+    else if (linePrefix.test(line)) count += 1
+  }
+  return count
 }
 
 /** 运行确定性一致性检查（本地完成，不依赖 AI） */
@@ -92,15 +100,50 @@ export function runConsistencyChecks(
 
 /** 归一化矩形 r 被 mosaics 覆盖的面积比例（0~1） */
 export function rectCoverage(r: Rect, mosaics: Rect[]): number {
-  const area = r.w * r.h
+  const width = Math.max(0, r.w)
+  const height = Math.max(0, r.h)
+  const area = width * height
   if (area <= 0) return 0
-  let covered = 0
+
+  const rx2 = r.x + width
+  const ry2 = r.y + height
+  const intersections: Rect[] = []
   for (const m of mosaics) {
     const x1 = Math.max(r.x, m.x)
     const y1 = Math.max(r.y, m.y)
-    const x2 = Math.min(r.x + r.w, m.x + m.w)
-    const y2 = Math.min(r.y + r.h, m.y + m.h)
-    if (x2 > x1 && y2 > y1) covered += (x2 - x1) * (y2 - y1)
+    const x2 = Math.min(rx2, m.x + Math.max(0, m.w))
+    const y2 = Math.min(ry2, m.y + Math.max(0, m.h))
+    if (x2 > x1 && y2 > y1) intersections.push({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 })
+  }
+
+  // Integrate the union of y intervals across x slices so overlapping mosaics count once.
+  const xs = [...new Set(intersections.flatMap((m) => [m.x, m.x + m.w]))].sort((a, b) => a - b)
+  let covered = 0
+  for (let i = 0; i < xs.length - 1; i++) {
+    const x1 = xs[i]
+    const x2 = xs[i + 1]
+    if (x2 <= x1) continue
+    const intervals = intersections
+      .filter((m) => m.x < x2 && m.x + m.w > x1)
+      .map((m) => [m.y, m.y + m.h] as const)
+      .sort((a, b) => a[0] - b[0])
+    let coveredY = 0
+    let start: number | null = null
+    let end = 0
+    for (const [y1, y2] of intervals) {
+      if (start === null) {
+        start = y1
+        end = y2
+      } else if (y1 <= end) {
+        end = Math.max(end, y2)
+      } else {
+        coveredY += end - start
+        start = y1
+        end = y2
+      }
+    }
+    if (start !== null) coveredY += end - start
+    covered += (x2 - x1) * coveredY
   }
   return Math.min(1, covered / area)
 }

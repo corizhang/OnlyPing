@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import type { ExportFooter, ExportStyle, Page } from '@/types'
 import { computeNumberStarts } from '@/types'
 import { footerText } from '@/lib/exporters'
@@ -90,37 +91,47 @@ export default function ExportPreview({ title, pages, style, footer, open, onOpe
             px（可在顶栏「导出样式」中调整）。预览已按弹窗宽度自动缩放，标注与序号为最终渲染效果。
           </DialogDescription>
         </DialogHeader>
-        <div className="flex items-center gap-1 border-b pb-2">
-          <span className="text-xs text-slate-500">预览缩放：</span>
-          <button
-            className="rounded p-1 text-slate-500 hover:bg-slate-100"
+        <div className="flex items-center gap-1 border-b pb-3">
+          <span className="mr-1 text-xs font-medium text-muted-foreground">预览缩放</span>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground"
             title="缩小（Ctrl+滚轮）"
+            aria-label="缩小预览"
             onClick={() => setManualZoom(Math.max(0.2, effectiveZoom / 1.2))}
           >
-            <ZoomOut className="h-4 w-4" />
-          </button>
-          <button
-            className="w-14 rounded px-1 text-center text-xs tabular-nums text-slate-500 hover:bg-slate-100"
+            <ZoomOut className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 min-w-14 px-1 text-xs tabular-nums text-muted-foreground"
             title="点击恢复自动适配"
             onClick={() => setManualZoom(null)}
           >
             {Math.round(effectiveZoom * 100)}%
-          </button>
-          <button
-            className="rounded p-1 text-slate-500 hover:bg-slate-100"
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground"
             title="放大（Ctrl+滚轮）"
+            aria-label="放大预览"
             onClick={() => setManualZoom(Math.min(2.5, effectiveZoom * 1.2))}
           >
-            <ZoomIn className="h-4 w-4" />
-          </button>
-          <button
-            className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+            <ZoomIn className="size-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-1 h-8 bg-background text-xs"
             onClick={() => setManualZoom(null)}
           >
             适应宽度
-          </button>
+          </Button>
         </div>
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto rounded border bg-slate-100 p-3">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto rounded-xl border bg-muted/50 p-4">
           {rendering ? (
             <div className="flex h-40 items-center justify-center gap-2 text-sm text-slate-500">
               <Loader2 className="h-4 w-4 animate-spin" />
