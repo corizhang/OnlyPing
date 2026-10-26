@@ -48,6 +48,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -64,7 +65,7 @@ import { idbGet, idbSet, validateAutosave } from '@/lib/db'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
-import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, Tool } from '@/types'
+import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
 import { ARROW_DEFAULT_WIDTH, computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_DEFAULT_TILE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
 const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#2563eb', '#7c3aed', '#111827']
@@ -119,6 +120,22 @@ const isPresetArray = (v: unknown): v is StylePreset[] => Array.isArray(v) && v.
 /** 项目健康状态指纹：标题、页脚单位、各页标注数与说明有无。任一变化即视为"已过期需复查" */
 const checkSignature = (t: string, pgs: Page[], f: ExportFooter) =>
   `${t}|${f.org}|${pgs.map((p) => `${p.id}:${p.annotations.length}:${p.notes.trim() ? 1 : 0}`).join(',')}`
+
+const restoreExportStyle = (saved?: (Partial<ExportStyle> & { imageScale?: number }) | null): ExportStyle => {
+  const { imageScale: legacyImageScale, ...currentStyle } = saved ?? {}
+  const rawScale = Number(currentStyle.stepImageScale ?? legacyImageScale ?? DEFAULT_EXPORT_STYLE.stepImageScale)
+  const stepImageScale = Math.min(100, Math.max(25, Number.isFinite(rawScale) ? rawScale : 100))
+  const validAlignment = (value: unknown): TextAlignment =>
+    value === 'center' || value === 'right' ? value : 'left'
+  return {
+    ...DEFAULT_EXPORT_STYLE,
+    ...currentStyle,
+    stepImageScale,
+    titleAlign: validAlignment(currentStyle.titleAlign),
+    headingAlign: validAlignment(currentStyle.headingAlign),
+    notesAlign: validAlignment(currentStyle.notesAlign),
+  }
+}
 
 export default function Home() {
   const [title, setTitle] = useState('活动参与流程明白纸')
@@ -221,7 +238,7 @@ export default function Home() {
         if (restored) {
           setTitle(restored.title ?? '明白纸')
           setPages(restored.pages)
-          setExportStyle(restored.exportStyle ?? DEFAULT_EXPORT_STYLE)
+          setExportStyle(restoreExportStyle(restored.exportStyle))
           setExportFooter(restored.exportFooter ?? DEFAULT_EXPORT_FOOTER)
           setSelectedPageId(restored.pages[0].id)
           setSaveNote(
@@ -239,7 +256,7 @@ export default function Home() {
           if (legacy) {
             setTitle(legacy.title ?? '明白纸')
             setPages(legacy.pages)
-            setExportStyle(legacy.exportStyle ?? DEFAULT_EXPORT_STYLE)
+            setExportStyle(restoreExportStyle(legacy.exportStyle))
             setExportFooter(legacy.exportFooter ?? DEFAULT_EXPORT_FOOTER)
             setSelectedPageId(legacy.pages[0].id)
             setSaveNote('已从旧版存储恢复项目')
@@ -592,9 +609,10 @@ export default function Home() {
     }
     setExporting(true)
     try {
-      if (kind === 'docx') await exportDocx(title, pages, exportStyle, exportFooter)
-      else if (kind === 'pdf') await exportPdf(title, pages, exportStyle, exportFooter)
-      else if (kind === 'long') await exportLongImage(title, pages, exportStyle, exportFooter)
+      const stepImageScale = (exportStyle.stepImageScale ?? 100) / 100
+      if (kind === 'docx') await exportDocx(title, pages, exportStyle, exportFooter, stepImageScale)
+      else if (kind === 'pdf') await exportPdf(title, pages, exportStyle, exportFooter, stepImageScale)
+      else if (kind === 'long') await exportLongImage(title, pages, exportStyle, exportFooter, stepImageScale)
       else if (selectedPage) await downloadPageImage(selectedPage, numberStarts.get(selectedPage.id) ?? 0)
     } finally {
       setExporting(false)
@@ -624,7 +642,7 @@ export default function Home() {
         }
         commitPages(validated.pages)
         setTitle(validated.title ?? '明白纸')
-        setExportStyle(validated.exportStyle ?? DEFAULT_EXPORT_STYLE)
+        setExportStyle(restoreExportStyle(validated.exportStyle))
         setExportFooter(validated.exportFooter ?? DEFAULT_EXPORT_FOOTER)
         setSelectedPageId(validated.pages[0]?.id ?? null)
       } catch {
@@ -740,18 +758,18 @@ export default function Home() {
                 导出样式
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-64" align="end">
+            <PopoverContent className="w-80" align="end">
               <div className="space-y-3">
-                <div className="text-xs font-medium text-slate-600">导出版式字号（px）</div>
+                <div className="text-xs font-medium text-slate-600">导出版式</div>
                 {(
                   [
-                    { key: 'title', label: '主标题' },
-                    { key: 'heading', label: '步骤标题' },
-                    { key: 'notes', label: '说明文字' },
+                    { key: 'title', alignKey: 'titleAlign', label: '主标题' },
+                    { key: 'heading', alignKey: 'headingAlign', label: '步骤标题' },
+                    { key: 'notes', alignKey: 'notesAlign', label: '说明文字' },
                   ] as const
-                ).map(({ key, label }) => (
-                  <label key={key} className="flex items-center gap-2 text-xs text-slate-500">
-                    {label}
+                ).map(({ key, alignKey, label }) => (
+                  <div key={key} className="flex items-center gap-2 text-xs text-slate-500">
+                    <span className="w-14 shrink-0">{label}</span>
                     <Slider
                       min={key === 'notes' ? 12 : 16}
                       max={key === 'notes' ? 32 : 56}
@@ -761,15 +779,51 @@ export default function Home() {
                       aria-label={`${label}字号`}
                     />
                     <span className="w-6 text-right tabular-nums">{exportStyle[key]}</span>
-                  </label>
+                    <Select
+                      value={exportStyle[alignKey] ?? 'left'}
+                      onValueChange={(value) => setExportStyle((s) => ({ ...s, [alignKey]: value as TextAlignment }))}
+                    >
+                      <SelectTrigger size="sm" className="h-7 w-[76px] px-2 text-xs" aria-label={`${label}对齐方式`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="left">靠左</SelectItem>
+                        <SelectItem value="center">居中</SelectItem>
+                        <SelectItem value="right">靠右</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 ))}
+                <div className="border-t pt-3">
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    步骤图片宽度
+                    <Slider
+                      min={25}
+                      max={100}
+                      step={5}
+                      value={[exportStyle.stepImageScale ?? 100]}
+                      onValueChange={([stepImageScale]) => setExportStyle((s) => ({ ...s, stepImageScale }))}
+                      className="mx-1 flex-1"
+                      aria-label="步骤图片宽度比例"
+                    />
+                    <span className="w-9 text-right tabular-nums">{exportStyle.stepImageScale ?? 100}%</span>
+                  </label>
+                  {selectedPage && (
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      单页 PNG 保持原尺寸：{selectedPage.width} × {selectedPage.height} px
+                    </div>
+                  )}
+                  <div className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                    只调整长图、Word 和 PDF 中每一步截图的显示宽度；标题、说明、页面画布及单页 PNG 保持原尺寸。
+                  </div>
+                </div>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-7 w-full text-xs"
                   onClick={() => setExportStyle(DEFAULT_EXPORT_STYLE)}
                 >
-                  恢复默认（32 / 22 / 16）
+                  恢复默认样式
                 </Button>
                 <div className="border-t pt-3">
                   <div className="mb-2 text-xs font-medium text-slate-600">页脚信息（随导出显示）</div>

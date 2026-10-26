@@ -134,13 +134,27 @@ export interface AIConfig {
 }
 
 /** 导出版式字号设置（px） */
+export type TextAlignment = 'left' | 'center' | 'right'
+
 export interface ExportStyle {
   title: number
   heading: number
   notes: number
+  stepImageScale: number // 多步骤导出中每张截图的宽度比例（25–100%）
+  titleAlign: TextAlignment
+  headingAlign: TextAlignment
+  notesAlign: TextAlignment
 }
 
-export const DEFAULT_EXPORT_STYLE: ExportStyle = { title: 32, heading: 22, notes: 16 }
+export const DEFAULT_EXPORT_STYLE: ExportStyle = {
+  title: 32,
+  heading: 22,
+  notes: 16,
+  stepImageScale: 100,
+  titleAlign: 'left',
+  headingAlign: 'left',
+  notesAlign: 'left',
+}
 
 /** 导出页脚信息 */
 export interface ExportFooter {

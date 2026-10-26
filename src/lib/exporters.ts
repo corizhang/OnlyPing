@@ -1,4 +1,4 @@
-import { Document, HeadingLevel, ImageRun, Packer, Paragraph, TextRun } from 'docx'
+import { AlignmentType, Document, HeadingLevel, ImageRun, Packer, Paragraph, TextRun } from 'docx'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import type { ExportFooter, ExportStyle, Page } from '@/types'
@@ -25,11 +25,18 @@ export function footerText(footer: ExportFooter): string {
   return parts.join('　')
 }
 
+const wordAlignment = (alignment: ExportStyle['titleAlign']) => ({
+  left: AlignmentType.LEFT,
+  center: AlignmentType.CENTER,
+  right: AlignmentType.RIGHT,
+})[alignment]
+
 /** 导出 Word：标题 + 每页「步骤 N 说明 + 标注后截图 + 文字」 */
-export async function exportDocx(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER) {
+export async function exportDocx(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
   const children = [
     new Paragraph({
       heading: HeadingLevel.HEADING_1,
+      alignment: wordAlignment(style.titleAlign ?? 'left'),
       children: [new TextRun({ text: title || '明白纸', bold: true, size: Math.round(style.title * 2) })],
     }),
   ]
@@ -39,6 +46,7 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
     children.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_2,
+        alignment: wordAlignment(style.headingAlign ?? 'left'),
         spacing: { before: 320 },
         children: [new TextRun({ text: `步骤 ${i + 1}`, bold: true, size: Math.round(style.heading * 2) })],
       })
@@ -46,6 +54,7 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
     if (page.notes) {
       children.push(
         new Paragraph({
+          alignment: wordAlignment(style.notesAlign ?? 'left'),
           children: [new TextRun({ text: page.notes, size: Math.round(style.notes * 2) })],
         }),
         new Paragraph({ children: [new TextRun('')] })
@@ -56,13 +65,14 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
     const ratio = Math.min(1, DOC_MAX_WIDTH / page.width)
     children.push(
       new Paragraph({
+        alignment: AlignmentType.CENTER,
         children: [
           new ImageRun({
             type: 'png',
             data: dataUrlToBase64(dataUrl),
             transformation: {
-              width: Math.round(page.width * ratio),
-              height: Math.round(page.height * ratio),
+              width: Math.round(page.width * ratio * imageScale),
+              height: Math.round(page.height * ratio * imageScale),
             },
           }),
         ],
@@ -89,7 +99,8 @@ function buildExportDom(
   pages: Page[],
   width: number,
   style: ExportStyle = DEFAULT_EXPORT_STYLE,
-  footer: ExportFooter = DEFAULT_EXPORT_FOOTER
+  footer: ExportFooter = DEFAULT_EXPORT_FOOTER,
+  imageScale = 1
 ): HTMLElement {
   const starts = computeNumberStarts(pages)
   const root = document.createElement('div')
@@ -97,7 +108,7 @@ function buildExportDom(
 
   const h1 = document.createElement('h1')
   h1.textContent = title || '明白纸'
-  h1.style.cssText = `font-size:${style.title}px;font-weight:700;margin:0 0 8px;`
+  h1.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign ?? 'left'};margin:0 0 8px;`
   root.appendChild(h1)
 
   pages.forEach((page, i) => {
@@ -105,16 +116,16 @@ function buildExportDom(
     wrap.style.cssText = 'margin-top:32px;'
     const h2 = document.createElement('h2')
     h2.textContent = `步骤 ${i + 1}`
-    h2.style.cssText = `font-size:${style.heading}px;font-weight:700;margin:0 0 8px;`
+    h2.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign ?? 'left'};margin:0 0 8px;`
     wrap.appendChild(h2)
     if (page.notes) {
       const p = document.createElement('p')
       p.textContent = page.notes
-      p.style.cssText = `font-size:${style.notes}px;line-height:1.7;margin:0 0 12px;`
+      p.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign ?? 'left'};margin:0 0 12px;`
       wrap.appendChild(p)
     }
     const img = document.createElement('img')
-    img.style.cssText = `width:100%;border:1px solid #e5e7eb;border-radius:8px;display:block;`
+    img.style.cssText = `width:${Math.max(0.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;border:1px solid #e5e7eb;border-radius:8px;display:block;`
     wrap.appendChild(img)
     renderPageToCanvas(page, starts.get(page.id) ?? 0).then((canvas) => {
       const ratio = width / page.width
@@ -152,9 +163,9 @@ function waitForImages(root: HTMLElement) {
 }
 
 /** 导出 PDF：每页一个 A4 版式 */
-export async function exportPdf(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER) {
+export async function exportPdf(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
   const width = 700
-  const root = buildExportDom(title, pages, width, style, footer)
+  const root = buildExportDom(title, pages, width, style, footer, imageScale)
   await waitForImages(root)
   const pdf = new jsPDF({ unit: 'pt', format: 'a4' })
   const pageW = pdf.internal.pageSize.getWidth()
@@ -199,7 +210,7 @@ export async function exportPdf(title: string, pages: Page[], style: ExportStyle
 }
 
 /** 导出长图：浏览器画布高度有限，超高时自动拆分为多张 */
-export async function exportLongImage(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER) {
+export async function exportLongImage(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
   const width = 840
   const MAX_HEIGHT = 14000
   const starts = computeNumberStarts(pages)
@@ -219,31 +230,31 @@ export async function exportLongImage(title: string, pages: Page[], style: Expor
   current = newPart()
   const h1 = document.createElement('h1')
   h1.textContent = title || '明白纸'
-  h1.style.cssText = `font-size:${style.title}px;font-weight:700;margin:0 0 16px;`
+  h1.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign ?? 'left'};margin:0 0 16px;`
   current.appendChild(h1)
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]
     const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)
-    const blockH = 60 + (page.notes ? style.notes * 3 : 0) + (width / page.width) * page.height
+    const blockH = 60 + (page.notes ? style.notes * 3 : 0) + (width * imageScale / page.width) * page.height
     if (currentH + blockH > MAX_HEIGHT) current = newPart()
     const wrap = document.createElement('div')
     wrap.style.cssText = 'margin-top:40px;'
     const h2 = document.createElement('h2')
     h2.textContent = `步骤 ${i + 1}`
-    h2.style.cssText = `font-size:${style.heading}px;font-weight:700;margin:0 0 8px;`
+    h2.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign ?? 'left'};margin:0 0 8px;`
     wrap.appendChild(h2)
     if (page.notes) {
       const p = document.createElement('p')
       p.textContent = page.notes
-      p.style.cssText = `font-size:${style.notes}px;line-height:1.7;margin:0 0 12px;`
+      p.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign ?? 'left'};margin:0 0 12px;`
       wrap.appendChild(p)
     }
     const img = document.createElement('img')
     img.src = canvas.toDataURL('image/png')
     img.width = width
     img.height = Math.round((width / page.width) * page.height)
-    img.style.cssText = 'width:100%;border:1px solid #e5e7eb;border-radius:8px;display:block;'
+    img.style.cssText = `width:${Math.max(0.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;border:1px solid #e5e7eb;border-radius:8px;display:block;`
     wrap.appendChild(img)
     current!.appendChild(wrap)
     currentH += blockH

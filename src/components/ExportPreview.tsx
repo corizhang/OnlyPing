@@ -88,7 +88,7 @@ export default function ExportPreview({ title, pages, style, footer, open, onOpe
           <DialogDescription>
             与「拼接长图 / PDF」导出完全一致的版式：内容宽 {PREVIEW_WIDTH}px，主标题{' '}
             {style.title}px，步骤标题 {style.heading}px，说明文字 {style.notes}
-            px（可在顶栏「导出样式」中调整）。预览已按弹窗宽度自动缩放，标注与序号为最终渲染效果。
+            px（可在顶栏「导出样式」中调整）。每步截图占内容宽度 {style.stepImageScale ?? 100}%；预览已按弹窗宽度自动缩放，标注与序号为最终渲染效果。
           </DialogDescription>
         </DialogHeader>
         <div className="flex items-center gap-1 border-b pb-3">
@@ -147,16 +147,16 @@ export default function ExportPreview({ title, pages, style, footer, open, onOpe
                   fontFamily: '"PingFang SC", "Microsoft YaHei", sans-serif',
                 }}
               >
-                <h1 style={{ fontSize: style.title, fontWeight: 700, margin: '0 0 16px' }}>
+                <h1 style={{ fontSize: style.title, fontWeight: 700, textAlign: style.titleAlign ?? 'left', margin: '0 0 16px' }}>
                   {title || '明白纸'}
                 </h1>
                 {pages.map((page, i) => (
                   <div key={page.id} style={{ marginTop: 40 }}>
-                    <h2 style={{ fontSize: style.heading, fontWeight: 700, margin: '0 0 8px' }}>
+                    <h2 style={{ fontSize: style.heading, fontWeight: 700, textAlign: style.headingAlign ?? 'left', margin: '0 0 8px' }}>
                       步骤 {i + 1}
                     </h2>
                     {page.notes && (
-                      <p style={{ fontSize: style.notes, lineHeight: 1.7, margin: '0 0 12px' }}>
+                      <p style={{ fontSize: style.notes, lineHeight: 1.7, textAlign: style.notesAlign ?? 'left', margin: '0 0 12px' }}>
                         {page.notes}
                       </p>
                     )}
@@ -165,7 +165,9 @@ export default function ExportPreview({ title, pages, style, footer, open, onOpe
                         src={images[page.id]}
                         alt={page.name}
                         style={{
-                          width: '100%',
+                          width: `${style.stepImageScale ?? 100}%`,
+                          height: 'auto',
+                          margin: '0 auto',
                           border: '1px solid #e5e7eb',
                           borderRadius: 8,
                           display: 'block',
