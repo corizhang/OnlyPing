@@ -123,28 +123,13 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   const mosaicsRef = useRef<Extract<Annotation, { kind: 'mosaic' }>[]>([])
   const redactsRef = useRef<Extract<Annotation, { kind: 'redact' }>[]>([])
   const [magnifierSource, setMagnifierSource] = useState('')
-  const [scale, setScale] = useState(1)
-  const [displayW, setDisplayW] = useState(0)
+  const scale = zoom
+  const displayW = page.width * zoom
   const dragRef = useRef<DragState | null>(null)
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
   const [textDraft, setTextDraft] = useState('')
   const textPosRef = useRef({ x: 0, y: 0, background: false })
   const [cropRect, setCropRect] = useState<Rect | null>(null)
-
-  // 容器尺寸 → 缩放（zoom 为额外倍率，Ctrl+滚轮可调）
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const update = () => {
-      const w = el.clientWidth * zoom
-      setDisplayW(w)
-      setScale(w / page.width)
-    }
-    update()
-    const ro = new ResizeObserver(update)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [page.width, zoom])
 
   // Ctrl + 滚轮缩放
   useEffect(() => {
@@ -154,7 +139,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
       const next = zoom * (e.deltaY < 0 ? 1.1 : 0.9)
-      onZoomChange(Math.min(3, Math.max(0.2, next)))
+      onZoomChange(Math.min(4, Math.max(0.05, next)))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
@@ -514,7 +499,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+      if (e.defaultPrevented || target.closest('input,textarea,select,[role=slider],[role=separator],[role=tab],[role=menuitem]') || target.isContentEditable) return
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && tool !== 'crop') {
         onChange(page.annotations.filter((a) => a.id !== selectedId))
         onSelect(null)

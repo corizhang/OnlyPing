@@ -1,5 +1,11 @@
+import { EditHistory } from '@/lib/history'
+import PanelResizeHandle from '@/components/PanelResizeHandle'
 import { useEffect, useRef, useState } from 'react'
 import {
+  PanelLeft,
+  PanelRight,
+  Keyboard,
+  Copy,
   Box,
   Circle,
   Highlighter,
@@ -119,7 +125,7 @@ const isPresetArray = (v: unknown): v is StylePreset[] => Array.isArray(v) && v.
 
 /** 项目健康状态指纹：标题、页脚单位、各页标注数与说明有无。任一变化即视为"已过期需复查" */
 const checkSignature = (t: string, pgs: Page[], f: ExportFooter) =>
-  `${t}|${f.org}|${pgs.map((p) => `${p.id}:${p.annotations.length}:${p.notes.trim() ? 1 : 0}`).join(',')}`
+  JSON.stringify([t, f, pgs.map(p => [p.id, p.notes, p.annotations])])
 
 const restoreExportStyle = (saved?: (Partial<ExportStyle> & { imageScale?: number }) | null): ExportStyle => {
   const { imageScale: legacyImageScale, ...currentStyle } = saved ?? {}
@@ -138,7 +144,7 @@ const restoreExportStyle = (saved?: (Partial<ExportStyle> & { imageScale?: numbe
 }
 
 export default function Home() {
-  const [title, setTitle] = useState('活动参与流程明白纸')
+  const [title, setTitleState] = useState('活动参与流程明白纸')
   const projectFileRef = useRef<HTMLInputElement>(null)
   const [pages, setPages] = useState<Page[]>([])
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null)
@@ -158,9 +164,35 @@ export default function Home() {
   const [aiConfig, setAIConfig] = useState(loadAIConfig())
   const [exporting, setExporting] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [zoomMode, setZoomMode] = useState<'fit' | 'width' | 'manual'>('fit')
+  const [leftOpen, setLeftOpen] = useState(true)
+  const [leftWidth, setLeftWidth] = useState(() => loadJSON('mbz-left-width', (v): v is number => typeof v === 'number' && v >= 180 && v <= 360) ?? 208)
+  const [rightWidth, setRightWidth] = useState(() => loadJSON('mbz-right-width', (v): v is number => typeof v === 'number' && v >= 260 && v <= 440) ?? 288)
+  useEffect(() => { localStorage.setItem('mbz-left-width', JSON.stringify(leftWidth)); localStorage.setItem('mbz-right-width', JSON.stringify(rightWidth)) }, [leftWidth, rightWidth])
+  const [rightOpen, setRightOpen] = useState(true)
+  const [inspector, setInspector] = useState<'properties' | 'notes' | 'ai'>('properties')
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
+  const suppressPanClick = useRef(false)
+  const manualZoom = (value: number) => { setZoomMode('manual'); setZoom(Math.max(.05, Math.min(4, value))) }
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || (e.target as HTMLElement)?.closest('input,textarea,select,button,[role="textbox"],[contenteditable="true"]')) return
+      e.preventDefault()
+      setSpaceHeld(true)
+    }
+    const up = (e: KeyboardEvent) => { if (e.code === 'Space') setSpaceHeld(false) }
+    const blur = () => { setSpaceHeld(false); panRef.current = null }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', blur) }
+  }, [])
   const [previewOpen, setPreviewOpen] = useState(false)
-  const [exportStyle, setExportStyle] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
-  const [exportFooter, setExportFooter] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
+  const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
+  const [exportFooter, setExportFooterState] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
   const [saveNote, setSaveNote] = useState('')
   const [storageReady, setStorageReady] = useState(false)
   // 一致性检查
@@ -177,55 +209,62 @@ export default function Home() {
     localStorage.setItem('mbz-auto-ai-scan', autoAiScan ? '1' : '0')
   }, [autoAiScan])
 
-  // 撤销/重做：快照式历史，连续微调（拖拽、打字）按 400ms 合并为一步
-  const undoStack = useRef<Page[][]>([])
-  const redoStack = useRef<Page[][]>([])
-  const lastHistoryAt = useRef(0)
+  type Snapshot = { title: string; pages: Page[]; exportStyle: ExportStyle; exportFooter: ExportFooter }
+  const history = useRef(new EditHistory<Snapshot>())
   const pagesRef = useRef<Page[]>([])
-  const HISTORY_LIMIT = 50
-
+  const metadataRef = useRef({ title, exportStyle, exportFooter })
+  const gestureRef = useRef(false)
+  const keyEditRef = useRef(false)
+  useEffect(() => { pagesRef.current = pages; metadataRef.current = { title, exportStyle, exportFooter } }, [pages, title, exportStyle, exportFooter])
   useEffect(() => {
-    pagesRef.current = pages
-  }, [pages])
-
+    const endGesture = () => { gestureRef.current = false; history.current.end() }
+    const endKey = () => { if (keyEditRef.current) { keyEditRef.current = false; history.current.end() } }
+    window.addEventListener('pointerup', endGesture)
+    window.addEventListener('pointercancel', endGesture)
+    window.addEventListener('keyup', endKey)
+    window.addEventListener('blur', endGesture)
+    return () => { window.removeEventListener('pointerup', endGesture); window.removeEventListener('pointercancel', endGesture); window.removeEventListener('keyup', endKey); window.removeEventListener('blur', endGesture) }
+  }, [])
+  const snapshot = (): Snapshot => ({ ...metadataRef.current, pages: pagesRef.current })
+  const record = (group: string | null = null) => history.current.record(snapshot(), gestureRef.current ? 'pointer' : keyEditRef.current ? 'key' : group)
+  const setTitle = (value: string) => {
+    if (metadataRef.current.title === value) return
+    record('title')
+    metadataRef.current = { ...metadataRef.current, title: value }
+    setTitleState(value)
+  }
+  const setExportStyle = (next: ExportStyle | ((value: ExportStyle) => ExportStyle)) => {
+    const value = typeof next === 'function' ? next(metadataRef.current.exportStyle) : next
+    record()
+    metadataRef.current = { ...metadataRef.current, exportStyle: value }
+    setExportStyleState(value)
+  }
+  const setExportFooter = (next: (value: ExportFooter) => ExportFooter) => {
+    const value = next(metadataRef.current.exportFooter)
+    record('footer')
+    metadataRef.current = { ...metadataRef.current, exportFooter: value }
+    setExportFooterState(value)
+  }
   const commitPages = (next: Page[] | ((prev: Page[]) => Page[]), coalesce = false) => {
     const current = pagesRef.current
     const resolved = typeof next === 'function' ? next(current) : next
     if (resolved === current) return
-    const now = Date.now()
-    if (!(coalesce && now - lastHistoryAt.current < 400)) {
-      undoStack.current.push(current)
-      if (undoStack.current.length > HISTORY_LIMIT) undoStack.current.shift()
-      redoStack.current = []
-    }
-    lastHistoryAt.current = now
+    record(coalesce ? `page:${selectedPageId}` : null)
     pagesRef.current = resolved
     setPages(resolved)
   }
-
-  const undo = () => {
-    const prev = undoStack.current.pop()
-    if (!prev) return
-    redoStack.current.push(pagesRef.current)
-    pagesRef.current = prev
-    setPages(prev)
-    if (selectedPageId && !prev.some((p) => p.id === selectedPageId)) {
-      setSelectedPageId(prev[0]?.id ?? null)
-    }
+  const applySnapshot = (value: Snapshot) => {
+    pagesRef.current = value.pages
+    metadataRef.current = value
+    setPages(value.pages)
+    setTitleState(value.title)
+    setExportStyleState(value.exportStyle)
+    setExportFooterState(value.exportFooter)
+    if (!value.pages.some(p => p.id === selectedPageId)) setSelectedPageId(value.pages[0]?.id ?? null)
     setSelectedAnnId(null)
   }
-
-  const redo = () => {
-    const next = redoStack.current.pop()
-    if (!next) return
-    undoStack.current.push(pagesRef.current)
-    pagesRef.current = next
-    setPages(next)
-    if (selectedPageId && !next.some((p) => p.id === selectedPageId)) {
-      setSelectedPageId(next[0]?.id ?? null)
-    }
-    setSelectedAnnId(null)
-  }
+  const undo = () => { const value = history.current.undo(snapshot()); if (value) applySnapshot(value) }
+  const redo = () => { const value = history.current.redo(snapshot()); if (value) applySnapshot(value) }
 
   // 启动时从 IndexedDB 恢复自动存档（含结构校验）；兼容迁移旧的 localStorage 存档
   useEffect(() => {
@@ -233,14 +272,14 @@ export default function Home() {
     ;(async () => {
       try {
         const data = await idbGet<unknown>()
-        const restored = validateAutosave(data)
+        const restored = validateAutosave(data) ?? validateAutosave(await idbGet<unknown>('backup'))
         if (cancelled) return
         if (restored) {
-          setTitle(restored.title ?? '明白纸')
+          setTitleState(restored.title ?? '明白纸')
           setPages(restored.pages)
-          setExportStyle(restoreExportStyle(restored.exportStyle))
-          setExportFooter(restored.exportFooter ?? DEFAULT_EXPORT_FOOTER)
-          setSelectedPageId(restored.pages[0].id)
+          setExportStyleState(restoreExportStyle(restored.exportStyle))
+          setExportFooterState(restored.exportFooter ?? DEFAULT_EXPORT_FOOTER)
+          setSelectedPageId(restored.pages[0]?.id ?? null)
           setSaveNote(
             restored.savedAt
               ? `已恢复 ${new Date(restored.savedAt).toLocaleTimeString()} 的自动保存`
@@ -249,27 +288,28 @@ export default function Home() {
           setStorageReady(true)
           return
         }
+        if (data != null) throw new Error('自动存档及恢复副本均无法读取，已暂停自动保存，请打开项目备份。')
         // 迁移旧的 localStorage 存档
         const raw = localStorage.getItem('mbz-autosave')
         if (raw) {
           const legacy = validateAutosave(JSON.parse(raw))
           if (legacy) {
-            setTitle(legacy.title ?? '明白纸')
+            setTitleState(legacy.title ?? '明白纸')
             setPages(legacy.pages)
-            setExportStyle(restoreExportStyle(legacy.exportStyle))
-            setExportFooter(legacy.exportFooter ?? DEFAULT_EXPORT_FOOTER)
-            setSelectedPageId(legacy.pages[0].id)
+            setExportStyleState(restoreExportStyle(legacy.exportStyle))
+            setExportFooterState(legacy.exportFooter ?? DEFAULT_EXPORT_FOOTER)
+            setSelectedPageId(legacy.pages[0]?.id ?? null)
             setSaveNote('已从旧版存储恢复项目')
           } else {
             setSaveNote('检测到旧版存档但数据损坏，未能恢复')
           }
-          localStorage.removeItem('mbz-autosave')
+          // 旧存档保留，直到 IndexedDB 成功写入后再清理。
         }
         setStorageReady(true)
       } catch {
         if (!cancelled) {
-          setSaveNote('读取自动存档失败')
-          setStorageReady(true)
+          setSaveNote('读取自动存档失败，自动保存已暂停，请打开项目备份')
+          setStorageReady(false)
         }
       }
     })()
@@ -302,7 +342,7 @@ export default function Home() {
       setAiScanProgress(`正在扫描 ${i + 1}/${pages.length} 页…`)
       try {
         const mosaics = p.annotations
-          .filter((a) => a.kind === 'mosaic')
+          .filter((a) => a.kind === 'mosaic' || a.kind === 'redact')
           .map((a) => ({ x: a.x / p.width, y: a.y / p.height, w: a.w / p.width, h: a.h / p.height }))
         const pageForAI = await preparePageForAI(p, privacyMode)
         const results = await aiPrivacyScanPage(aiConfig, pageForAI, mosaics)
@@ -381,9 +421,12 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady) return
     const save = () => {
-      idbSet({ title, pages, exportStyle, exportFooter, savedAt: Date.now() })
-        .then(() => setSaveNote(`已自动保存 ${new Date().toLocaleTimeString()}`))
-        .catch(() => setSaveNote('自动保存失败（存储空间不足），请用「保存项目」导出 JSON'))
+      idbSet({ schemaVersion: 1, title, pages, exportStyle, exportFooter, savedAt: Date.now() })
+        .then(() => {
+          localStorage.removeItem('mbz-autosave')
+          setSaveNote(`已自动保存 ${new Date().toLocaleTimeString()}`)
+        })
+        .catch(() => setSaveNote('自动保存失败，请用「保存项目」下载备份'))
     }
     const debounce = setTimeout(save, 1000)
     const timer = setInterval(save, 30000)
@@ -460,7 +503,21 @@ export default function Home() {
   const numberStarts = computeNumberStarts(pages)
   const selectedAnn = selectedPage?.annotations.find((a) => a.id === selectedAnnId) ?? null
 
-  const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number; zoom?: number }) => {
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el || !selectedPage || zoomMode === 'manual') return
+    const fit = () => {
+      const width = Math.max(1, el.clientWidth - 32) / selectedPage.width
+      const height = Math.max(1, el.clientHeight - 64) / selectedPage.height
+      setZoom(Math.min(1, zoomMode === 'width' ? width : Math.min(width, height)))
+    }
+    fit()
+    const observer = new ResizeObserver(fit)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [selectedPage?.id, selectedPage?.width, selectedPage?.height, zoomMode, leftOpen, rightOpen])
+
+  const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number; zoom?: number; color?: string; text?: string }) => {
     if (!selectedPage || !selectedAnnId) return
     updatePage(selectedPage.id, {
       annotations: selectedPage.annotations.map((a) =>
@@ -614,13 +671,15 @@ export default function Home() {
       else if (kind === 'pdf') await exportPdf(title, pages, exportStyle, exportFooter, stepImageScale)
       else if (kind === 'long') await exportLongImage(title, pages, exportStyle, exportFooter, stepImageScale)
       else if (selectedPage) await downloadPageImage(selectedPage, numberStarts.get(selectedPage.id) ?? 0)
+    } catch (err) {
+      toast.error('导出失败', { description: err instanceof Error ? err.message : '请重试' })
     } finally {
       setExporting(false)
     }
   }
 
   const saveProject = () => {
-    const blob = new Blob([JSON.stringify({ title, pages, exportStyle, exportFooter }, null, 2)], {
+    const blob = new Blob([JSON.stringify({ schemaVersion: 1, title, pages, exportStyle, exportFooter }, null, 2)], {
       type: 'application/json',
     })
     const a = document.createElement('a')
@@ -640,10 +699,14 @@ export default function Home() {
           alert('项目文件损坏或格式不正确')
           return
         }
-        commitPages(validated.pages)
-        setTitle(validated.title ?? '明白纸')
-        setExportStyle(restoreExportStyle(validated.exportStyle))
-        setExportFooter(validated.exportFooter ?? DEFAULT_EXPORT_FOOTER)
+        history.current.clear()
+        pagesRef.current = validated.pages
+        setPages(validated.pages)
+        setSelectedAnnId(null)
+        setStorageReady(true)
+        setTitleState(validated.title ?? '明白纸')
+        setExportStyleState(restoreExportStyle(validated.exportStyle))
+        setExportFooterState(validated.exportFooter ?? DEFAULT_EXPORT_FOOTER)
         setSelectedPageId(validated.pages[0]?.id ?? null)
       } catch {
         alert('项目文件解析失败')
@@ -684,7 +747,12 @@ export default function Home() {
           : { cls: 'bg-emerald-500', title: '检查通过' }
 
   return (
-    <div className="flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground"
+      onPointerDownCapture={() => { history.current.end(); gestureRef.current = true }}
+      onFocusCapture={() => history.current.end()}
+      onBlurCapture={() => history.current.end()}
+      onKeyDownCapture={e => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && !(e.target as HTMLElement).closest('input,textarea,select')) keyEditRef.current = true }}
+    >
       <Toaster richColors position="bottom-right" />
       {/* 顶栏 */}
       <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b bg-card px-3">
@@ -711,7 +779,7 @@ export default function Home() {
             className="text-muted-foreground"
             title="撤销（Ctrl+Z）"
             aria-label="撤销"
-            disabled={!undoStack.current.length}
+            disabled={!history.current.canUndo}
             onClick={undo}
           >
             <Undo2 className="h-4 w-4" />
@@ -722,7 +790,7 @@ export default function Home() {
             className="text-muted-foreground"
             title="重做（Ctrl+Y）"
             aria-label="重做"
-            disabled={!redoStack.current.length}
+            disabled={!history.current.canRedo}
             onClick={redo}
           >
             <Redo2 className="h-4 w-4" />
@@ -733,10 +801,7 @@ export default function Home() {
               {saveNote}
             </span>
           )}
-          <Button variant="outline" size="sm" className="h-9 bg-background" onClick={saveProject}>
-            <Save className="size-4" />
-            保存项目
-          </Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => projectFileRef.current?.click()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <input
             ref={projectFileRef}
             type="file"
@@ -747,10 +812,6 @@ export default function Home() {
               e.currentTarget.value = ''
             }}
           />
-          <Button variant="outline" size="sm" className="h-9 bg-background" onClick={() => projectFileRef.current?.click()}>
-            <FolderOpen className="size-4" />
-            打开项目
-          </Button>
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm" className="h-9 bg-background">
@@ -895,8 +956,14 @@ export default function Home() {
         </div>
       </header>
 
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card px-3">
+        <Button variant="ghost" size="sm" aria-pressed={leftOpen} onClick={() => setLeftOpen(v => !v)}><PanelLeft className="size-4" />步骤</Button>
+        <span className="text-xs text-muted-foreground">{TOOLS.find(t => t.value === tool)?.label}</span>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setShortcutsOpen(true)}><Keyboard className="size-4" />快捷键</Button>
+        <Button variant="ghost" size="sm" aria-pressed={rightOpen} onClick={() => setRightOpen(v => !v)}><PanelRight className="size-4" />检查器</Button>
+      </div>
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <PageList
+        {leftOpen && <><div className="h-full shrink-0" style={{ width: leftWidth, maxWidth: `calc(100vw - ${rightOpen ? rightWidth : 0}px - 380px)` }}><PageList
           pages={pages}
           selectedId={selectedPageId}
           onImportFiles={importFiles}
@@ -905,17 +972,27 @@ export default function Home() {
             setSelectedAnnId(null)
           }}
           onMove={movePage}
+          onReorder={(sourceId, targetId) => commitPages(prev => {
+            const source = prev.find(p => p.id === sourceId)
+            if (!source || sourceId === targetId) return prev
+            const next = prev.filter(p => p.id !== sourceId)
+            const target = next.findIndex(p => p.id === targetId)
+            if (target < 0) return prev
+            next.splice(target, 0, source)
+            return next
+          })}
           onRemove={removePage}
-        />
+          onDuplicate={(id) => { const source = pages.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }}
+        /></div><PanelResizeHandle label="调整步骤栏宽度" width={leftWidth} min={180} max={360} direction={1} onChange={setLeftWidth} /></>}
 
         {/* 中间编辑区 */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-card px-3 py-2">
+          <div className="flex h-14 shrink-0 items-center gap-2 overflow-x-auto border-b bg-card px-3 py-2">
             <ToggleGroup
               type="single"
               value={tool}
               onValueChange={(v) => v && setTool(v as Tool)}
-              className="gap-0.5 rounded-md bg-muted p-0.5"
+              className="shrink-0 gap-0.5 rounded-md bg-muted p-0.5"
             >
               {TOOLS.map((t) => (
                 <Tooltip key={t.value}>
@@ -938,40 +1015,149 @@ export default function Home() {
                 </Tooltip>
               ))}
             </ToggleGroup>
-            <Separator orientation="vertical" className="hidden h-8 sm:block" />
-            <div className="flex items-center gap-1 rounded-md border bg-background px-1 py-0.5">
+
+          </div>
+
+          <div
+            ref={viewportRef}
+            className={`min-h-0 flex-1 overflow-auto bg-muted/70 p-4 ${spaceHeld ? 'cursor-grab' : ''}`}
+            onPointerDownCapture={e => {
+              if (!spaceHeld && e.button !== 1) return
+              e.preventDefault(); e.stopPropagation()
+              e.currentTarget.setPointerCapture(e.pointerId)
+              panRef.current = { x: e.clientX, y: e.clientY, left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop }
+              suppressPanClick.current = true
+            }}
+            onPointerMoveCapture={e => {
+              const pan = panRef.current
+              if (!pan) return
+              e.stopPropagation()
+              e.currentTarget.scrollLeft = pan.left - (e.clientX - pan.x)
+              e.currentTarget.scrollTop = pan.top - (e.clientY - pan.y)
+            }}
+            onPointerUpCapture={e => { if (panRef.current) { e.stopPropagation(); panRef.current = null; e.currentTarget.releasePointerCapture(e.pointerId); setTimeout(() => { suppressPanClick.current = false }, 0) } }}
+            onPointerCancel={() => { panRef.current = null; suppressPanClick.current = false }}
+            onClickCapture={e => { if (suppressPanClick.current) { e.stopPropagation(); suppressPanClick.current = false } }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={importDropped}
+          >
+            {selectedPage ? (
+              <CanvasEditor
+                page={selectedPage}
+                tool={tool}
+                color={color}
+                zoom={zoom}
+                numberStart={numberStarts.get(selectedPage.id) ?? 0}
+                mosaicTile={annStyle.mosaicTile}
+                numberR={annStyle.numberR}
+                textSize={annStyle.textSize}
+                selectedId={selectedAnnId}
+                onSelect={id => { setSelectedAnnId(id); if (id) setInspector('properties') }}
+                onChange={(annotations) => updatePage(selectedPage.id, { annotations })}
+                onZoomChange={manualZoom}
+                onCrop={(rect) => applyCrop(selectedPage, rect)}
+              />
+            ) : (
+              <div className="flex h-full min-h-80 flex-col items-center justify-center text-center text-muted-foreground">
+                <ImageIcon className="mb-3 size-6 text-muted-foreground/70" />
+                <p className="text-sm font-medium text-foreground">打开一张截图开始标注</p>
+                <p className="mt-1 text-xs">从左侧添加、粘贴或拖入图片</p>
+                <span className="mt-3 border bg-card px-2 py-1 text-[11px] font-medium">Ctrl + V</span>
+              </div>
+            )}
+          </div>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-1 border-t bg-card px-3 py-1 text-xs">
+            <span className="mr-auto text-muted-foreground">空格 + 拖动平移</span>
+            {/* 画布缩放 */}
+            <div className="ml-auto flex items-center gap-0.5 rounded-md border bg-background p-0.5">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground"
+                title="缩小（Ctrl+滚轮）"
+                aria-label="缩小画布"
+                onClick={() => manualZoom(zoom / 1.2)}
+              >
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 min-w-14 px-1 text-xs tabular-nums text-muted-foreground"
+                title="点击恢复 100%"
+                onClick={() => manualZoom(1)}
+              >
+                {Math.round(zoom * 100)}%
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground"
+                title="放大（Ctrl+滚轮）"
+                aria-label="放大画布"
+                onClick={() => manualZoom(zoom * 1.2)}
+              >
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                title="完整显示整张截图"
+                onClick={() => setZoomMode('fit')}
+              >
+                适应画布
+              </Button>
+            </div>
+            <span className="text-xs text-slate-400">
+              共 {pages.length} 页{selectedPage ? ` · 当前：${selectedPage.name}` : ''}
+            </span><Button variant="ghost" size="sm" onClick={() => setZoomMode('width')}>适应宽度</Button>          </div>
+
+        </div>
+
+        {rightOpen && <PanelResizeHandle label="调整检查器宽度" width={rightWidth} min={260} max={440} direction={-1} onChange={setRightWidth} />}
+        <aside className={`${rightOpen ? 'flex' : 'hidden'} shrink-0 flex-col border-l bg-card`} style={{ width: rightWidth, maxWidth: `calc(100vw - ${leftOpen ? leftWidth : 0}px - 380px)` }} aria-label="编辑检查器">
+          <div className="flex shrink-0 gap-1 border-b p-2" role="tablist" aria-label="检查器面板">
+            {([['properties', '属性'], ['notes', '步骤说明'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
+          </div>
+          <div className={`${inspector === 'properties' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col gap-5 overflow-auto p-4`}>
+            <div><h2 className="text-sm font-semibold">{selectedAnn ? '当前标注' : '新建标注默认样式'}</h2><p className="mt-1 text-xs text-muted-foreground">{selectedAnn ? '修改下方属性会应用到选中的标注。' : '在画布中选择标注可编辑其属性。'}</p></div>
+
+            {(!selectedAnn || 'color' in selectedAnn) && <div className="flex items-center gap-1 rounded-md border bg-background px-1 py-0.5">
               {COLORS.map((c) => (
                 <Button
                   key={c}
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => setColor(c)}
+                  onClick={() => selectedAnn && 'color' in selectedAnn ? updateAnnSize({ color: c }) : setColor(c)}
                   aria-label={`标注颜色 ${c}`}
-                  aria-pressed={color === c}
+                  aria-pressed={(selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c}
                   className={`size-7 rounded-md p-0 ${
-                    color === c ? 'bg-accent ring-1 ring-foreground/40' : 'hover:bg-muted'
+                    (selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c ? 'bg-accent ring-1 ring-foreground/40' : 'hover:bg-muted'
                   }`}
                   title={`标注颜色 ${c}`}
                 >
-                  <span className={`size-3.5 rounded-full ring-1 ring-black/10 ${color === c ? 'scale-110' : ''}`} style={{ background: c }} />
+                  <span className={`size-3.5 rounded-full ring-1 ring-black/10 ${(selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c ? 'scale-110' : ''}`} style={{ background: c }} />
                 </Button>
               ))}
-            </div>
+            </div>}
 
             {/* 样式模板：新建标注默认样式 + 预设管理 */}
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" className="h-9 bg-background" title="样式模板">
                   <Palette className="size-4" />
-                  样式模板
+                  新建标注默认样式
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-72" align="start">
                 <div className="space-y-3">
                   <div className="text-xs font-medium text-slate-600">
-                    新建标注默认样式（颜色取上方色板）
+                    新建标注默认样式（与当前对象属性独立）
                   </div>
+                  <div className="flex gap-2">{COLORS.map(c => <button key={c} aria-label={`新建默认颜色 ${c}`} aria-pressed={annStyle.color === c} className="size-6 rounded-full border-2 aria-pressed:border-foreground" style={{ background: c }} onClick={() => setColor(c)} />)}</div>
                   {(
                     [
                       { key: 'numberR', label: '序号大小', min: 12, max: 56 },
@@ -1157,83 +1343,16 @@ export default function Home() {
               </Button>
             )}
 
-            {/* 画布缩放 */}
-            <div className="ml-auto flex items-center gap-0.5 rounded-md border bg-background p-0.5">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground"
-                title="缩小（Ctrl+滚轮）"
-                aria-label="缩小画布"
-                onClick={() => setZoom((z) => Math.max(0.2, z / 1.2))}
-              >
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 min-w-14 px-1 text-xs tabular-nums text-muted-foreground"
-                title="点击恢复 100%"
-                onClick={() => setZoom(1)}
-              >
-                {Math.round(zoom * 100)}%
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground"
-                title="放大（Ctrl+滚轮）"
-                aria-label="放大画布"
-                onClick={() => setZoom((z) => Math.min(3, z * 1.2))}
-              >
-                <ZoomIn className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground"
-                title="适应面板宽度"
-                onClick={() => setZoom(1)}
-              >
-                适应
-              </Button>
-            </div>
-            <span className="text-xs text-slate-400">
-              共 {pages.length} 页{selectedPage ? ` · 当前：${selectedPage.name}` : ''}
-            </span>
-          </div>
 
-          <div
-            className="flex-1 overflow-auto bg-muted/70 p-4"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={importDropped}
-          >
-            {selectedPage ? (
-              <CanvasEditor
-                page={selectedPage}
-                tool={tool}
-                color={color}
-                zoom={zoom}
-                numberStart={numberStarts.get(selectedPage.id) ?? 0}
-                mosaicTile={annStyle.mosaicTile}
-                numberR={annStyle.numberR}
-                textSize={annStyle.textSize}
-                selectedId={selectedAnnId}
-                onSelect={setSelectedAnnId}
-                onChange={(annotations) => updatePage(selectedPage.id, { annotations }, true)}
-                onZoomChange={setZoom}
-                onCrop={(rect) => applyCrop(selectedPage, rect)}
-              />
-            ) : (
-              <div className="flex h-full min-h-80 flex-col items-center justify-center text-center text-muted-foreground">
-                <ImageIcon className="mb-3 size-6 text-muted-foreground/70" />
-                <p className="text-sm font-medium text-foreground">打开一张截图开始标注</p>
-                <p className="mt-1 text-xs">从左侧添加、粘贴或拖入图片</p>
-                <span className="mt-3 border bg-card px-2 py-1 text-[11px] font-medium">Ctrl + V</span>
-              </div>
-            )}
+            {selectedAnn && (selectedAnn.kind === 'text' || selectedAnn.kind === 'callout') && <label className="space-y-2 text-xs">文字内容<Textarea aria-label="标注文字内容" value={selectedAnn.text} onChange={e => updateAnnSize({ text: e.target.value })} /></label>}
+            {selectedAnn && selectedPage && <div className="flex flex-wrap gap-2 border-t pt-3">
+              <Button variant="outline" size="sm" onClick={() => { const shifted = 'points' in selectedAnn ? { ...selectedAnn, points: selectedAnn.points.map(p => ({ x: p.x + 12, y: p.y + 12 })) } : 'x1' in selectedAnn ? { ...selectedAnn, x1: selectedAnn.x1 + 12, y1: selectedAnn.y1 + 12, x2: selectedAnn.x2 + 12, y2: selectedAnn.y2 + 12 } : { ...selectedAnn, x: selectedAnn.x + 12, y: selectedAnn.y + 12 }; const copy = { ...shifted, id: uid() }; updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" />复制</Button>
+              <Button variant="outline" size="sm" onClick={() => updatePage(selectedPage.id, { annotations: [...selectedPage.annotations.filter(a => a.id !== selectedAnn.id), selectedAnn] })}>置顶</Button>
+              <Button variant="outline" size="sm" onClick={() => updatePage(selectedPage.id, { annotations: [selectedAnn, ...selectedPage.annotations.filter(a => a.id !== selectedAnn.id)] })}>置底</Button>
+              <Button variant="outline" size="sm" onClick={() => { updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => a.id !== selectedAnn.id) }); setSelectedAnnId(null) }}>删除</Button>
+            </div>}
           </div>
-
+          <div className={`${inspector === 'notes' ? 'block' : 'hidden'} min-h-0 flex-1 overflow-auto`}>
           {/* 本页说明 */}
           {selectedPage && (
             <div className="border-t bg-card px-4 py-3">
@@ -1241,24 +1360,32 @@ export default function Home() {
                 步骤说明 · 第 {pages.indexOf(selectedPage) + 1} 页
                 <span className="text-[10px]">自动保存</span>
               </div>
+              <Label htmlFor="step-name">步骤名称</Label>
+              <Input id="step-name" className="my-2" value={selectedPage.name} onChange={e => updatePage(selectedPage.id, { name: e.target.value }, true)} />
               <Textarea
                 value={selectedPage.notes}
                 onChange={(e) => updatePage(selectedPage.id, { notes: e.target.value }, true)}
-                placeholder="例如：打开活动页面后，点击「立即参与」按钮进入报名流程……"
-                className="min-h-[72px] resize-y bg-background text-sm leading-relaxed"
+                aria-label="步骤说明" placeholder="例如：打开活动页面后，点击「立即参与」按钮进入报名流程……"
+                className="min-h-[260px] resize-y bg-background text-sm leading-relaxed"
               />
             </div>
-          )}
-        </div>
-
+          )}{!selectedPage && <p className="p-4 text-sm text-muted-foreground">添加截图后编写步骤说明。</p>}
+          </div>
+          <div className={`${inspector === 'ai' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
         <AIPanel
           config={aiConfig}
           onConfigChange={setAIConfig}
           pages={pages}
           selectedPageId={selectedPageId}
-          onUpdatePage={updatePage}
-        />
+          onUpdatePage={(id, patch, expected) => {
+            const current = pagesRef.current.find(p => p.id === id)
+            if (!current || current !== expected) throw new Error('此步骤在生成期间已修改或切换项目，未覆盖现有内容，请重新生成。')
+            updatePage(id, patch)
+          }}
+        />          </div>
+        </aside>
       </div>
+      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{TOOLS.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
       <ExportPreview
         title={title}
         pages={pages}

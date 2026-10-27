@@ -251,8 +251,8 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
 
 /** 隐私模式下，把现有马赛克和标注渲染进图像后再交给 AI。 */
 export async function preparePageForAI(page: Page, privacy: boolean): Promise<Page> {
-  if (!privacy) return page
-  const canvas = await renderPageToCanvas(page)
+  const protectedPage = privacy ? page : { ...page, annotations: page.annotations.filter(a => a.kind === 'mosaic' || a.kind === 'redact') }
+  const canvas = await renderPageToCanvas(protectedPage)
   return { ...page, image: canvas.toDataURL('image/jpeg', 0.85) }
 }
 

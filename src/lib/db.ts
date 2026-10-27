@@ -1,3 +1,5 @@
+import { z } from 'zod'
+import { DEFAULT_EXPORT_STYLE, DEFAULT_EXPORT_FOOTER } from '@/types'
 /** 基于 IndexedDB 的本地存档：配额为磁盘级，可容纳含大量截图的项目 */
 
 const DB_NAME = 'mingbai-tool'
@@ -21,7 +23,12 @@ export async function idbSet(value: unknown): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite')
-    tx.objectStore(STORE).put(value, KEY)
+    const store = tx.objectStore(STORE)
+    const previous = store.get(KEY)
+    previous.onsuccess = () => {
+      if (validateAutosave(previous.result)) store.put(previous.result, 'backup')
+      store.put(value, KEY)
+    }
     tx.oncomplete = () => {
       db.close()
       resolve()
@@ -37,11 +44,11 @@ export async function idbSet(value: unknown): Promise<void> {
   })
 }
 
-export async function idbGet<T>(): Promise<T | null> {
+export async function idbGet<T>(key = KEY): Promise<T | null> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readonly')
-    const req = tx.objectStore(STORE).get(KEY)
+    const req = tx.objectStore(STORE).get(key)
     req.onsuccess = () => {
       db.close()
       resolve((req.result as T) ?? null)
@@ -53,41 +60,43 @@ export async function idbGet<T>(): Promise<T | null> {
   })
 }
 
-/** 校验自动存档结构完整性，过滤损坏数据，返回可用的项目或 null */
-export function validateAutosave(data: unknown): {
-  title?: string
-  pages: import('@/types').Page[]
-  exportStyle?: import('@/types').ExportStyle
-  exportFooter?: import('@/types').ExportFooter
-  savedAt?: number
-} | null {
-  if (!data || typeof data !== 'object') return null
-  const d = data as Record<string, unknown>
-  if (!Array.isArray(d.pages)) return null
-  const pages = (d.pages as unknown[]).filter((p): p is import('@/types').Page => {
-    if (!p || typeof p !== 'object') return false
-    const pg = p as Record<string, unknown>
-    return (
-      typeof pg.id === 'string' &&
-      typeof pg.image === 'string' &&
-      typeof pg.width === 'number' &&
-      typeof pg.height === 'number' &&
-      Array.isArray(pg.annotations)
-    )
-  })
-  if (!pages.length) return null
-  // 标注结构清洗：丢弃字段缺失或类型未知的标注
-  const clean = pages.map((p) => ({
-    ...p,
-    annotations: p.annotations.filter(
-      (a) => a && typeof (a as { id?: unknown }).id === 'string' && ['box', 'ellipse', 'highlight', 'redact', 'mosaic', 'number', 'arrow', 'line', 'freehand', 'callout', 'magnifier', 'text'].includes((a as { kind?: string }).kind ?? '')
-    ),
-  }))
-  return {
-    title: typeof d.title === 'string' ? d.title : undefined,
-    pages: clean,
-    exportStyle: (d.exportStyle as import('@/types').ExportStyle) ?? undefined,
-    exportFooter: (d.exportFooter as import('@/types').ExportFooter) ?? undefined,
-    savedAt: typeof d.savedAt === 'number' ? d.savedAt : undefined,
-  }
+const finite = z.number().finite()
+const positive = finite.positive()
+const point = { x: finite, y: finite }
+const rect = { ...point, w: positive, h: positive }
+const base = { id: z.string().min(1) }
+const color = z.string().regex(/^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)$/)
+const optionalSize = positive.optional()
+const annotation = z.discriminatedUnion('kind', [
+  z.object({ ...base, kind: z.enum(['box', 'ellipse', 'highlight', 'redact']), ...rect, color }),
+  z.object({ ...base, kind: z.literal('mosaic'), ...rect, tile: optionalSize }),
+  z.object({ ...base, kind: z.literal('number'), ...point, r: optionalSize }),
+  z.object({ ...base, kind: z.enum(['arrow', 'line']), x1: finite, y1: finite, x2: finite, y2: finite, color, width: optionalSize }),
+  z.object({ ...base, kind: z.literal('freehand'), points: z.array(z.object(point)).min(1), color, width: optionalSize }),
+  z.object({ ...base, kind: z.literal('text'), ...point, text: z.string(), color, size: optionalSize, background: z.boolean().optional() }),
+  z.object({ ...base, kind: z.literal('callout'), ...rect, text: z.string(), color }),
+  z.object({ ...base, kind: z.literal('magnifier'), ...rect, zoom: positive }),
+])
+const image = z.string().regex(/^data:image\/(png|jpeg|webp|gif);base64,/)
+const annotations = z.array(annotation).refine(items => new Set(items.map(a => a.id)).size === items.length)
+const snapshot = { image, width: positive, height: positive, annotations }
+const page = z.object({ id: z.string().min(1), name: z.string().default('未命名步骤'), notes: z.string().default(''), ...snapshot, orig: z.object(snapshot).optional() })
+const align = z.enum(['left', 'center', 'right'])
+const project = z.object({
+  schemaVersion: z.literal(1).optional(),
+  title: z.string().default('明白纸'),
+  pages: z.array(page).refine(items => new Set(items.map(p => p.id)).size === items.length),
+  exportStyle: z.object({
+    title: positive.max(120).default(32), heading: positive.max(120).default(22), notes: positive.max(120).default(16),
+    stepImageScale: finite.min(25).max(100).optional(), imageScale: finite.min(25).max(100).optional(),
+    titleAlign: align.default('left'), headingAlign: align.default('left'), notesAlign: align.default('left'),
+  }).transform(s => ({ ...s, stepImageScale: s.stepImageScale ?? s.imageScale ?? 100 })).default(DEFAULT_EXPORT_STYLE),
+  exportFooter: z.object({ org: z.string(), version: z.string(), showDate: z.boolean() }).default(DEFAULT_EXPORT_FOOTER),
+  savedAt: finite.optional(),
+})
+
+/** 整份校验，损坏时拒绝覆盖现有项目，避免静默丢失标注。 */
+export function validateAutosave(data: unknown) {
+  const result = project.safeParse(data)
+  return result.success ? result.data : null
 }

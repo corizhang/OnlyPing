@@ -55,7 +55,7 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
       children.push(
         new Paragraph({
           alignment: wordAlignment(style.notesAlign ?? 'left'),
-          children: [new TextRun({ text: page.notes, size: Math.round(style.notes * 2) })],
+          children: page.notes.split(/\r?\n/).map((text, i) => new TextRun({ text, break: i ? 1 : 0, size: Math.round(style.notes * 2) })),
         }),
         new Paragraph({ children: [new TextRun('')] })
       )
@@ -93,189 +93,124 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
   download(blob, `${title || '明白纸'}.docx`)
 }
 
-/** 构建导出用的离屏 DOM（标题 + 图文步骤 + 页脚） */
-function buildExportDom(
-  title: string,
-  pages: Page[],
-  width: number,
-  style: ExportStyle = DEFAULT_EXPORT_STYLE,
-  footer: ExportFooter = DEFAULT_EXPORT_FOOTER,
-  imageScale = 1
-): HTMLElement {
-  const starts = computeNumberStarts(pages)
+/** 预览与导出共用的排版、分页及栅格化管线。 */
+export async function renderDocument(
+  title: string, pages: Page[], style: ExportStyle, footer: ExportFooter,
+  format: 'long' | 'pdf', imageScale = style.stepImageScale / 100,
+): Promise<HTMLCanvasElement[]> {
+  const width = 840
+  const padding = 48
+  const maxHeight = format === 'pdf' ? 1188 : 7000
   const root = document.createElement('div')
-  root.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;background:#ffffff;padding:40px 48px;font-family:${FONT};color:#111827;`
-
-  const h1 = document.createElement('h1')
-  h1.textContent = title || '明白纸'
-  h1.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign ?? 'left'};margin:0 0 8px;`
-  root.appendChild(h1)
-
-  pages.forEach((page, i) => {
-    const wrap = document.createElement('div')
-    wrap.style.cssText = 'margin-top:32px;'
-    const h2 = document.createElement('h2')
-    h2.textContent = `步骤 ${i + 1}`
-    h2.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign ?? 'left'};margin:0 0 8px;`
-    wrap.appendChild(h2)
-    if (page.notes) {
-      const p = document.createElement('p')
-      p.textContent = page.notes
-      p.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign ?? 'left'};margin:0 0 12px;`
-      wrap.appendChild(p)
-    }
-    const img = document.createElement('img')
-    img.style.cssText = `width:${Math.max(0.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;border:1px solid #e5e7eb;border-radius:8px;display:block;`
-    wrap.appendChild(img)
-    renderPageToCanvas(page, starts.get(page.id) ?? 0).then((canvas) => {
-      const ratio = width / page.width
-      img.src = canvas.toDataURL('image/png')
-      img.width = width
-      img.height = Math.round(page.height * ratio)
-    })
-    root.appendChild(wrap)
-  })
-  const ft = footerText(footer)
-  if (ft) {
-    const foot = document.createElement('div')
-    foot.textContent = ft
-    foot.style.cssText = `margin-top:40px;font-size:12px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px;`
-    root.appendChild(foot)
-  }
+  root.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;padding:${padding}px;box-sizing:border-box;background:white;font-family:${FONT};color:#111827;`
+  root.setAttribute('aria-hidden', 'true')
   document.body.appendChild(root)
-  return root
+  const result: HTMLCanvasElement[] = []
+  const capture = async () => {
+    if (!root.childElementCount) return
+    const canvas = await html2canvas(root, { backgroundColor: '#ffffff', scale: 1 })
+    result.push(canvas)
+    root.replaceChildren()
+  }
+  const append = async (block: HTMLElement) => {
+    root.appendChild(block)
+    if (format === 'pdf' && root.getBoundingClientRect().height > maxHeight) {
+      const img = block.querySelector('img')
+      const available = maxHeight - root.getBoundingClientRect().height + (img?.getBoundingClientRect().height ?? 0)
+      if (img && available >= 180) {
+        img.style.maxHeight = `${available}px`
+        img.style.objectFit = 'contain'
+      }
+    }
+    if (root.getBoundingClientRect().height <= maxHeight) return
+    block.remove()
+    await capture()
+    root.appendChild(block)
+    if (root.getBoundingClientRect().height <= maxHeight) return
+    // 单个超长步骤也分片，避免超出浏览器画布尺寸限制。
+    const fullHeight = Math.ceil(block.getBoundingClientRect().height)
+    block.remove()
+    const viewport = document.createElement('div')
+    const sliceHeight = maxHeight - padding * 2
+    viewport.style.cssText = `height:${sliceHeight}px;overflow:hidden;position:relative;`
+    root.appendChild(viewport)
+    viewport.appendChild(block)
+    for (let offset = 0; offset < fullHeight; offset += sliceHeight) {
+      viewport.style.height = `${Math.min(sliceHeight, fullHeight - offset)}px`
+      block.style.transform = `translateY(-${offset}px)`
+      result.push(await html2canvas(root, { backgroundColor: '#ffffff', scale: 1 }))
+    }
+    root.replaceChildren()
+  }
+  try {
+    await document.fonts.ready
+    const heading = document.createElement('h1')
+    heading.textContent = title || '明白纸'
+    heading.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign};margin:0 0 20px;overflow-wrap:anywhere;`
+    root.appendChild(heading)
+    const starts = computeNumberStarts(pages)
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i]
+      const block = document.createElement('section')
+      block.style.cssText = 'padding-top:24px;'
+      const h = document.createElement('h2')
+      h.textContent = `步骤 ${i + 1}`
+      h.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign};margin:0 0 8px;`
+      block.appendChild(h)
+      if (page.notes) {
+        const notes = document.createElement('p')
+        notes.textContent = page.notes
+        notes.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign};white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px;`
+        block.appendChild(notes)
+      }
+      const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)
+      const img = document.createElement('img')
+      img.src = canvas.toDataURL('image/png')
+      img.style.cssText = `display:block;width:${Math.max(.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;`
+      await img.decode()
+      block.appendChild(img)
+      await append(block)
+    }
+    const ft = footerText(footer)
+    if (ft) {
+      const el = document.createElement('div')
+      el.textContent = ft
+      el.style.cssText = 'padding-top:28px;font-size:12px;color:#666;overflow-wrap:anywhere;'
+      await append(el)
+    }
+    await capture()
+    if (format === 'pdf') {
+      return result.map(canvas => {
+        const sheet = document.createElement('canvas')
+        sheet.width = width
+        sheet.height = maxHeight
+        const ctx = sheet.getContext('2d')!
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, width, maxHeight)
+        ctx.drawImage(canvas, 0, 0)
+        return sheet
+      })
+    }
+    return result
+  } finally {
+    root.remove()
+  }
 }
 
-function waitForImages(root: HTMLElement) {
-  const imgs = Array.from(root.querySelectorAll('img'))
-  return Promise.all(
-    imgs.map(
-      (img) =>
-        new Promise<void>((resolve) => {
-          if (img.complete && img.naturalWidth > 0) resolve()
-          else {
-            img.onload = () => resolve()
-            img.onerror = () => resolve()
-          }
-        })
-    )
-  )
-}
-
-/** 导出 PDF：每页一个 A4 版式 */
 export async function exportPdf(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
-  const width = 700
-  const root = buildExportDom(title, pages, width, style, footer, imageScale)
-  await waitForImages(root)
+  const canvases = await renderDocument(title, pages, style, footer, 'pdf', imageScale)
   const pdf = new jsPDF({ unit: 'pt', format: 'a4' })
-  const pageW = pdf.internal.pageSize.getWidth()
-  const pageH = pdf.internal.pageSize.getHeight()
-  const margin = 36
-  for (let i = 0; i < pages.length; i++) {
-    if (i > 0) pdf.addPage()
-    const blocks = root.children[i + 1] as HTMLElement // 0 是标题
-    const canvas = await html2canvas(blocks, { backgroundColor: '#ffffff', scale: 2 })
-    const availW = pageW - margin * 2
-    const availH = pageH - margin * 2
-    const ratio = Math.min(availW / canvas.width, availH / canvas.height)
-    const w = canvas.width * ratio
-    const h = canvas.height * ratio
-    pdf.addImage(
-      canvas.toDataURL('image/jpeg', 0.92),
-      'JPEG',
-      margin + (availW - w) / 2,
-      margin,
-      w,
-      h
-    )
-  }
-  // 页脚：渲染在最后一页底部
-  const ftEl = root.children[pages.length + 1] as HTMLElement | undefined
-  if (ftEl && footerText(footer)) {
-    const canvas = await html2canvas(ftEl, { backgroundColor: '#ffffff', scale: 2 })
-    const availW = pageW - margin * 2
-    const w = Math.min(availW, canvas.width * 0.75)
-    const h = (canvas.height / canvas.width) * w
-    pdf.addImage(
-      canvas.toDataURL('image/jpeg', 0.92),
-      'JPEG',
-      margin,
-      pageH - margin - h,
-      w,
-      h
-    )
-  }
-  document.body.removeChild(root)
+  canvases.forEach((canvas, i) => {
+    if (i) pdf.addPage()
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight())
+  })
   pdf.save(`${title || '明白纸'}.pdf`)
 }
 
-/** 导出长图：浏览器画布高度有限，超高时自动拆分为多张 */
 export async function exportLongImage(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
-  const width = 840
-  const MAX_HEIGHT = 14000
-  const starts = computeNumberStarts(pages)
-  const parts: HTMLElement[] = []
-  let current: HTMLElement | null = null
-  let currentH = 0
-
-  const newPart = (): HTMLElement => {
-    const el = document.createElement('div')
-    el.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;background:#ffffff;padding:48px 56px;font-family:${FONT};color:#111827;`
-    document.body.appendChild(el)
-    parts.push(el)
-    currentH = 96
-    return el
-  }
-
-  current = newPart()
-  const h1 = document.createElement('h1')
-  h1.textContent = title || '明白纸'
-  h1.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign ?? 'left'};margin:0 0 16px;`
-  current.appendChild(h1)
-
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i]
-    const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)
-    const blockH = 60 + (page.notes ? style.notes * 3 : 0) + (width * imageScale / page.width) * page.height
-    if (currentH + blockH > MAX_HEIGHT) current = newPart()
-    const wrap = document.createElement('div')
-    wrap.style.cssText = 'margin-top:40px;'
-    const h2 = document.createElement('h2')
-    h2.textContent = `步骤 ${i + 1}`
-    h2.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign ?? 'left'};margin:0 0 8px;`
-    wrap.appendChild(h2)
-    if (page.notes) {
-      const p = document.createElement('p')
-      p.textContent = page.notes
-      p.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign ?? 'left'};margin:0 0 12px;`
-      wrap.appendChild(p)
-    }
-    const img = document.createElement('img')
-    img.src = canvas.toDataURL('image/png')
-    img.width = width
-    img.height = Math.round((width / page.width) * page.height)
-    img.style.cssText = `width:${Math.max(0.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;border:1px solid #e5e7eb;border-radius:8px;display:block;`
-    wrap.appendChild(img)
-    current!.appendChild(wrap)
-    currentH += blockH
-  }
-
-  // 页脚追加到最后一张图
-  const ft = footerText(footer)
-  if (ft) {
-    const foot = document.createElement('div')
-    foot.textContent = ft
-    foot.style.cssText = `margin-top:40px;font-size:12px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px;`
-    current!.appendChild(foot)
-  }
-
-  await waitForImages(document.body as unknown as HTMLElement)
-  for (let i = 0; i < parts.length; i++) {
-    const canvas = await html2canvas(parts[i], { backgroundColor: '#ffffff' })
-    const a = document.createElement('a')
-    a.download = parts.length > 1 ? `${title || '明白纸'}-长图-${i + 1}.png` : `${title || '明白纸'}-长图.png`
-    a.href = canvas.toDataURL('image/png')
-    a.click()
-    document.body.removeChild(parts[i])
+  const canvases = await renderDocument(title, pages, style, footer, 'long', imageScale)
+  for (let i = 0; i < canvases.length; i++) {
+    const blob = await new Promise<Blob>((resolve, reject) => canvases[i].toBlob(value => value ? resolve(value) : reject(new Error('图片编码失败'))))
+    download(blob, `${title || '明白纸'}-长图${canvases.length > 1 ? `-${i + 1}` : ''}.png`)
   }
 }

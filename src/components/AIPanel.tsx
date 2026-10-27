@@ -24,14 +24,14 @@ interface Props {
   onConfigChange: (cfg: AIConfig & { demo: boolean }) => void
   pages: Page[]
   selectedPageId: string | null
-  onUpdatePage: (id: string, patch: Partial<Page>) => void
+  onUpdatePage: (id: string, patch: Partial<Page>, expected: Page) => void
 }
 
 export default function AIPanel({ config, onConfigChange, pages, selectedPageId, onUpdatePage }: Props) {
   const [status, setStatus] = useState<{ kind: 'info' | 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [draft, setDraft] = useState(config)
-  const [privacy, setPrivacy] = useState(() => localStorage.getItem('mbz-privacy') === '1')
+  const [privacy, setPrivacy] = useState(() => localStorage.getItem('mbz-privacy') !== '0')
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
 
@@ -56,7 +56,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
       const prev = index > 0 ? pages[index - 1].notes : ''
       const numberStart = computeNumberStarts(pages).get(page.id) ?? 0
       const text = await aiGenerateDescription(config, await redactForAI(page), index, pages.length, prev, numberStart)
-      onUpdatePage(page.id, { notes: text })
+      onUpdatePage(page.id, { notes: text }, page)
       return `已根据标注生成「${page.name}」的说明文字，请检查是否与序号对应`
     })
 
@@ -89,7 +89,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
       const { res, anns } = await buildAnnotate(page, page.notes)
       if (!anns.length)
         return `未能根据说明在「${page.name}」中识别到对应元素，可补充更具体的描述后重试`
-      onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] })
+      onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
       return `已按说明在「${page.name}」添加 ${res.boxes.length} 个画框、${res.points.length} 个序号（全局累计编号），请检查后微调`
     })
 
@@ -114,7 +114,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
             prev,
             starts.get(page.id) ?? 0
           )
-          onUpdatePage(page.id, { notes: text })
+          onUpdatePage(page.id, { notes: text }, page)
         } catch {
           failed.push(page)
         }
@@ -135,7 +135,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         setStatus({ kind: 'info', text: `正在按说明标注 ${k + 1}/${targets.length}：${page.name} …` })
         try {
           const { anns } = await buildAnnotate(page, page.notes)
-          if (anns.length) onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] })
+          if (anns.length) onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
         } catch {
           failed.push(page)
         }
@@ -172,7 +172,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         w: r.w * page.width,
         h: r.h * page.height,
       }))
-      onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] })
+      onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
       return `已在「${page.name}」添加 ${anns.length} 个打码区域，请检查后微调`
     })
 
@@ -186,12 +186,12 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         x: p.x * page.width,
         y: p.y * page.height,
       }))
-      onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] })
+      onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
       return `已在「${page.name}」添加 ${anns.length} 个序号标注，可拖动调整位置`
     })
 
   return (
-    <aside className="flex h-full w-[20rem] max-w-[30vw] shrink-0 flex-col border-l bg-card">
+    <aside className="flex h-full min-h-0 w-full flex-col bg-card">
       <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
         <div className="flex items-center gap-2.5">
           <WandSparkles className="size-4 text-muted-foreground" />
@@ -272,7 +272,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         {!config.demo && (
           <div className="flex gap-2 border-b pb-3 text-[11px] leading-relaxed text-muted-foreground">
             <Info className="mt-0.5 size-3.5 shrink-0" />
-            <span>截图将发送至已配置的 AI 接口。包含敏感信息时，建议开启隐私模式。</span>
+            <span>截图将发送至已配置的 AI 接口。已有马赛克和实色遮挡始终在本地应用后发送。</span>
           </div>
         )}
 
@@ -282,7 +282,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
             <div>
               <div className="text-xs font-semibold text-foreground">隐私模式</div>
               <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                上传前在本地应用已有打码，并重编码图片。
+                开启后发送完整标注图；关闭时仍保留马赛克和实色遮挡。
               </p>
             </div>
           </div>

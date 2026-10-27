@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { ArrowDown, ArrowUp, ImagePlus, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Copy, ImagePlus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { Page } from '@/types'
@@ -11,9 +11,11 @@ interface Props {
   onImportFiles: (files: Iterable<File>) => Promise<void>
   onMove: (id: string, dir: -1 | 1) => void
   onRemove: (id: string) => void
+  onDuplicate: (id: string) => void
+  onReorder: (sourceId: string, targetId: string) => void
 }
 
-export default function PageList({ pages, selectedId, onSelect, onImportFiles, onMove, onRemove }: Props) {
+export default function PageList({ pages, selectedId, onSelect, onImportFiles, onMove, onRemove, onDuplicate, onReorder }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleFiles = async (files: FileList | null) => {
@@ -23,12 +25,12 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
   }
 
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r bg-card">
+    <aside className="flex h-full w-full shrink-0 flex-col border-r bg-card">
       <div className="space-y-3 border-b px-4 py-3.5">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-sm font-semibold tracking-tight">页面步骤</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">按顺序整理操作截图</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">拖动排序 · 点击编辑</p>
           </div>
           <span className="text-xs tabular-nums text-muted-foreground">{pages.length}</span>
         </div>
@@ -58,6 +60,10 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
         {pages.map((page, i) => (
           <article
             key={page.id}
+            draggable
+            onDragStart={e => { e.dataTransfer.setData('application/x-onlyping-step', page.id); e.dataTransfer.effectAllowed = 'move' }}
+            onDragOver={e => { if (e.dataTransfer.types.includes('application/x-onlyping-step')) e.preventDefault() }}
+            onDrop={e => { const source = e.dataTransfer.getData('application/x-onlyping-step'); if (!source) return; e.preventDefault(); e.stopPropagation(); onReorder(source, page.id) }}
             className={`group overflow-hidden border transition-colors ${
               page.id === selectedId
                 ? 'border-primary/60 bg-primary/[0.035]'
@@ -70,7 +76,7 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
               onClick={() => onSelect(page.id)}
             >
               <div className="relative flex aspect-[16/10] items-center justify-center overflow-hidden bg-muted/60 p-2">
-                <img src={page.image} alt={page.name} className="max-h-full max-w-full object-contain" />
+                <img draggable={false} src={page.image} alt={page.name} className="max-h-full max-w-full object-contain" />
                 <Badge className="absolute left-2 top-2 h-5 min-w-5 justify-center rounded-sm px-1.5 text-[10px]">
                   {i + 1}
                 </Badge>
@@ -91,6 +97,7 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
               <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" disabled={i === pages.length - 1} onClick={() => onMove(page.id, 1)} title="下移页面" aria-label={`下移第 ${i + 1} 页`}>
                 <ArrowDown className="size-3.5" />
               </Button>
+              <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" onClick={() => onDuplicate(page.id)} aria-label={`复制第 ${i + 1} 页`} title="复制步骤"><Copy className="size-3.5" /></Button>
               <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => onRemove(page.id)} title="删除页面" aria-label={`删除第 ${i + 1} 页`}>
                 <Trash2 className="size-3.5" />
               </Button>
