@@ -1,3 +1,4 @@
+import { TOOL_SHORTCUTS, DEFAULT_TOOL_ORDER } from '@/lib/tools'
 import { EditHistory } from '@/lib/history'
 import PanelResizeHandle from '@/components/PanelResizeHandle'
 import { useEffect, useRef, useState } from 'react'
@@ -6,6 +7,7 @@ import {
   PanelRight,
   Keyboard,
   Copy,
+  FilePlus2,
   Box,
   Circle,
   Highlighter,
@@ -39,6 +41,9 @@ import {
   BookOpen,
   Save,
   FolderOpen,
+  ArrowUpToLine,
+  ArrowDownToLine,
+  GripVertical,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -51,7 +56,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -75,24 +79,6 @@ import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect
 import { ARROW_DEFAULT_WIDTH, computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_DEFAULT_TILE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
 const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#2563eb', '#7c3aed', '#111827']
-const TOOL_SHORTCUTS: Record<string, Tool> = {
-  v: 'select',
-  b: 'box',
-  n: 'number',
-  a: 'arrow',
-  m: 'mosaic',
-  t: 'text',
-  e: 'ellipse',
-  h: 'highlight',
-  r: 'redact',
-  g: 'text-box',
-  l: 'line',
-  p: 'freehand',
-  q: 'callout',
-  z: 'magnifier',
-  c: 'crop',
-}
-
 /** 从 localStorage 读取并校验 JSON，损坏时返回 null */
 const loadJSON = <T,>(key: string, guard: (v: unknown) => v is T): T | null => {
   try {
@@ -151,7 +137,7 @@ export default function Home() {
   const [tool, setTool] = useState<Tool>('select')
   // 新建标注的默认样式（用户级偏好，持久化到 localStorage）
   const [annStyle, setAnnStyle] = useState<AnnotationStyle>(
-    () => loadJSON('mbz-ann-style', isStyle) ?? DEFAULT_ANNOTATION_STYLE
+    () => ({ ...DEFAULT_ANNOTATION_STYLE, ...(loadJSON('mbz-ann-style', isStyle) ?? {}) })
   )
   // 标注样式预设（用户级，跨项目复用）
   const [presets, setPresets] = useState<StylePreset[]>(
@@ -170,7 +156,7 @@ export default function Home() {
   const [rightWidth, setRightWidth] = useState(() => loadJSON('mbz-right-width', (v): v is number => typeof v === 'number' && v >= 260 && v <= 440) ?? 288)
   useEffect(() => { localStorage.setItem('mbz-left-width', JSON.stringify(leftWidth)); localStorage.setItem('mbz-right-width', JSON.stringify(rightWidth)) }, [leftWidth, rightWidth])
   const [rightOpen, setRightOpen] = useState(true)
-  const [inspector, setInspector] = useState<'properties' | 'notes' | 'ai'>('properties')
+  const [inspector, setInspector] = useState<'notes' | 'ai'>('notes')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const [spaceHeld, setSpaceHeld] = useState(false)
@@ -191,6 +177,8 @@ export default function Home() {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', blur) }
   }, [])
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('未命名明白纸')
   const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
   const [exportFooter, setExportFooterState] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
   const [saveNote, setSaveNote] = useState('')
@@ -412,7 +400,7 @@ export default function Home() {
   }
 
   const applyPreset = (p: StylePreset) => {
-    setAnnStyle({ color: p.color, numberR: p.numberR, textSize: p.textSize, mosaicTile: p.mosaicTile })
+    setAnnStyle({ color: p.color, numberR: p.numberR, textSize: p.textSize, mosaicTile: p.mosaicTile, strokeWidth: p.strokeWidth ?? 4 })
   }
 
   const deletePreset = (id: string) => setPresets((prev) => prev.filter((p) => p.id !== id))
@@ -689,6 +677,26 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000)
   }
 
+  const createProject = () => {
+    const name = newProjectName.trim() || '未命名明白纸'
+    if (pages.length) saveProject()
+    history.current.clear()
+    pagesRef.current = []
+    metadataRef.current = { title: name, exportStyle: DEFAULT_EXPORT_STYLE, exportFooter: DEFAULT_EXPORT_FOOTER }
+    setPages([])
+    setTitleState(name)
+    setExportStyleState(DEFAULT_EXPORT_STYLE)
+    setExportFooterState(DEFAULT_EXPORT_FOOTER)
+    setSelectedPageId(null)
+    setSelectedAnnId(null)
+    setTool('select')
+    setZoomMode('fit')
+    setCheckSig(null)
+    setIssues([])
+    setSaveNote('正在保存新项目…')
+    setNewProjectOpen(false)
+  }
+
   const loadProject = (file: File) => {
     const reader = new FileReader()
     reader.onload = () => {
@@ -715,6 +723,18 @@ export default function Home() {
     reader.readAsText(file)
   }
 
+  const [toolOrder, setToolOrder] = useState<Tool[]>(() => {
+    const saved = loadJSON<Tool[]>('mbz-tool-order', (v): v is Tool[] => Array.isArray(v) && v.every(x => typeof x === 'string'))
+    const defaults: Tool[] = DEFAULT_TOOL_ORDER
+    return [...new Set([...(saved ?? []), ...defaults])].filter((v): v is Tool => defaults.includes(v))
+  })
+  const [reorderingTools, setReorderingTools] = useState(false)
+  const draggedTool = useRef<Tool | null>(null)
+  useEffect(() => { localStorage.setItem('mbz-tool-order', JSON.stringify(toolOrder)) }, [toolOrder])
+  const moveTool = (from: Tool, to: Tool, after = false) => {
+    if (from === to) return
+    setToolOrder(current => { const next = current.filter(v => v !== from); next.splice(next.indexOf(to) + (after ? 1 : 0), 0, from); return next })
+  }
   const TOOLS: { value: Tool; icon: React.ReactNode; label: string; shortcut: string }[] = [
     { value: 'select', icon: <MousePointer2 className="h-4 w-4" />, label: '选择/移动', shortcut: 'V' },
     { value: 'box', icon: <Box className="h-4 w-4" />, label: '画框', shortcut: 'B' },
@@ -732,6 +752,8 @@ export default function Home() {
     { value: 'text-box', icon: <TextCursorInput className="h-4 w-4" />, label: '文字框', shortcut: 'G' },
     { value: 'crop', icon: <Crop className="h-4 w-4" />, label: '裁剪', shortcut: 'C' },
   ]
+
+  const orderedTools = toolOrder.map(value => TOOLS.find(t => t.value === value)!).filter(Boolean)
 
   // 健康状态灯：未检查=灰 / 内容已改=黄闪感 / 有警告=橙 / 仅提示=蓝 / 通过=绿
   const sigStale = checkSig !== null && checkSig !== checkSignature(title, pages, exportFooter)
@@ -801,7 +823,7 @@ export default function Home() {
               {saveNote}
             </span>
           )}
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => projectFileRef.current?.click()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => projectFileRef.current?.click()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <input
             ref={projectFileRef}
             type="file"
@@ -986,41 +1008,10 @@ export default function Home() {
         /></div><PanelResizeHandle label="调整步骤栏宽度" width={leftWidth} min={180} max={360} direction={1} onChange={setLeftWidth} /></>}
 
         {/* 中间编辑区 */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-14 shrink-0 items-center gap-2 overflow-x-auto border-b bg-card px-3 py-2">
-            <ToggleGroup
-              type="single"
-              value={tool}
-              onValueChange={(v) => v && setTool(v as Tool)}
-              className="shrink-0 gap-0.5 rounded-md bg-muted p-0.5"
-            >
-              {TOOLS.map((t) => (
-                <Tooltip key={t.value}>
-                  <TooltipTrigger asChild>
-                    <ToggleGroupItem
-                      value={t.value}
-                      aria-label={t.label}
-                      title={`${t.label}（${t.shortcut}）`}
-                      className="size-8 rounded p-0 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground aria-checked:bg-foreground aria-checked:text-background aria-checked:shadow-sm"
-                    >
-                      {t.icon}
-                    </ToggleGroupItem>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <span className="flex items-center gap-3">
-                      {t.label}
-                      <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px]">{t.shortcut}</kbd>
-                    </span>
-                  </TooltipContent>
-                </Tooltip>
-              ))}
-            </ToggleGroup>
-
-          </div>
-
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           <div
             ref={viewportRef}
-            className={`min-h-0 flex-1 overflow-auto bg-muted/70 p-4 ${spaceHeld ? 'cursor-grab' : ''}`}
+            className={`min-h-0 flex-1 overflow-auto bg-muted/70 p-4 pb-36 ${spaceHeld ? 'cursor-grab' : ''}`}
             onPointerDownCapture={e => {
               if (!spaceHeld && e.button !== 1) return
               e.preventDefault(); e.stopPropagation()
@@ -1051,8 +1042,9 @@ export default function Home() {
                 mosaicTile={annStyle.mosaicTile}
                 numberR={annStyle.numberR}
                 textSize={annStyle.textSize}
+                strokeWidth={annStyle.strokeWidth}
                 selectedId={selectedAnnId}
-                onSelect={id => { setSelectedAnnId(id); if (id) setInspector('properties') }}
+                onSelect={setSelectedAnnId}
                 onChange={(annotations) => updatePage(selectedPage.id, { annotations })}
                 onZoomChange={manualZoom}
                 onCrop={(rect) => applyCrop(selectedPage, rect)}
@@ -1067,6 +1059,300 @@ export default function Home() {
             )}
           </div>
 
+          <div className="pointer-events-none absolute inset-x-0 bottom-14 z-20 flex justify-center px-3">
+            <div className="pointer-events-auto flex max-w-full flex-col items-center gap-2">
+          <div className="toolbar-surface flex max-w-full items-center gap-2 overflow-x-auto rounded-2xl px-2.5 py-2 text-xs">
+            {(!selectedAnn || 'color' in selectedAnn) && <div className="flex shrink-0 items-center gap-0.5" aria-label="标注颜色">
+              {COLORS.map((c) => (
+                <Button
+                  key={c}
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => selectedAnn && 'color' in selectedAnn ? updateAnnSize({ color: c }) : setColor(c)}
+                  aria-label={`标注颜色 ${c}`}
+                  aria-pressed={(selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c}
+                  className={`size-7 rounded-md p-0 transition-colors ${
+                    (selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c ? 'bg-white/20 ring-1 ring-white/70' : 'hover:bg-white/10'
+                  }`}
+                  title={`标注颜色 ${c}`}
+                >
+                  <span className="size-5 rounded-[4px] ring-1 ring-white/15" style={{ background: c }} />
+                </Button>
+              ))}
+            </div>}
+
+            {!selectedAnn && (tool === 'number' || tool === 'text' || tool === 'text-box' || tool === 'mosaic' || tool === 'line' || tool === 'arrow' || tool === 'freehand') && (() => {
+              const key = tool === 'number' ? 'numberR' : tool === 'text' || tool === 'text-box' ? 'textSize' : tool === 'mosaic' ? 'mosaicTile' : 'strokeWidth'
+              const min = key === 'mosaicTile' ? 8 : key === 'strokeWidth' ? 2 : 12
+              const max = key === 'mosaicTile' ? 48 : key === 'strokeWidth' ? 16 : 80
+              return <label className="flex shrink-0 items-center gap-2 border-l border-white/10 pl-3 text-slate-300">{key === 'numberR' ? '序号大小' : key === 'textSize' ? '字号' : key === 'mosaicTile' ? '打码强度' : '线宽'}<Slider min={min} max={max} value={[annStyle[key]]} onValueChange={([value]) => setAnnStyle(v => ({ ...v, [key]: value }))} className="w-28" /><span className="min-w-6 rounded-md bg-white/10 px-1.5 py-1 text-center tabular-nums text-white">{annStyle[key]}</span></label>
+            })()}
+
+            {/* 样式模板：新建标注默认样式 + 预设管理 */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="size-8 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="样式预设" title="样式预设">
+                  <Palette className="size-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-72 border-white/10 bg-slate-950 text-slate-100 shadow-2xl" align="start">
+                <div className="space-y-3">
+                  <div className="text-xs font-medium text-slate-300">
+                    新建标注默认样式（与当前对象属性独立）
+                  </div>
+                  <div className="flex gap-2">{COLORS.map(c => <button key={c} aria-label={`新建默认颜色 ${c}`} aria-pressed={annStyle.color === c} className="size-6 rounded-full border-2 aria-pressed:border-white" style={{ background: c }} onClick={() => setColor(c)} />)}</div>
+                  {(
+                    [
+                      { key: 'numberR', label: '序号大小', min: 12, max: 56 },
+                      { key: 'textSize', label: '文字字号', min: 16, max: 80 },
+                      { key: 'mosaicTile', label: '打码强度', min: MOSAIC_MIN_TILE, max: MOSAIC_MAX_TILE },
+                      { key: 'strokeWidth', label: '线宽', min: 2, max: 16 },
+                    ] as const
+                  ).map(({ key, label, min, max }) => (
+                    <label key={key} className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+                      {label}
+                      <Slider
+                        min={min}
+                        max={max}
+                        value={[annStyle[key]]}
+                        onValueChange={([value]) => setAnnStyle((s) => ({ ...s, [key]: value }))}
+                        className="mx-1 flex-1"
+                        aria-label={label}
+                      />
+                      <span className="w-8 text-right tabular-nums">
+                        {annStyle[key]}
+                        {key === 'mosaicTile' ? 'px' : ''}
+                      </span>
+                    </label>
+                  ))}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 w-full bg-white/10 text-xs text-slate-100 hover:bg-white/15"
+                    disabled={!pages.length}
+                    title="把当前样式应用到所有页面的已有标注（可用 Ctrl+Z 撤销）"
+                    onClick={() => {
+                      if (window.confirm('将把全部已有标注统一为当前样式（可用撤销恢复），继续？')) applyStyleToAll()
+                    }}
+                  >
+                    套用当前样式到全部页面
+                  </Button>
+
+                  <div className="border-t pt-3">
+                    <div className="mb-2 text-xs font-medium text-slate-300">样式预设</div>
+                    <div className="mb-2 flex gap-1.5">
+                      <Input
+                        value={presetName}
+                        onChange={(e) => setPresetName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && savePreset()}
+                        placeholder="预设名称，如：银行红-大字号"
+                        className="h-8 flex-1 border-white/15 bg-white/10 text-xs text-white placeholder:text-slate-500"
+                      />
+                      <Button size="sm" className="h-8 px-2 text-xs" disabled={!presetName.trim()} onClick={savePreset}>
+                        保存
+                      </Button>
+                    </div>
+                    {presets.length === 0 ? (
+                      <p className="text-[11px] text-slate-400">
+                        还没有预设。调好上面的样式后输入名称保存，之后一键套用。
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        {presets.map((p) => (
+                          <div
+                            key={p.id}
+                            className="group flex items-center gap-2 rounded border border-white/10 px-2 py-1.5"
+                          >
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`套用样式预设：${p.name}`}
+                              className="size-7 shrink-0 rounded-md p-0"
+                              title="套用此预设"
+                              onClick={() => applyPreset(p)}
+                            >
+                              <span className="size-3.5 rounded-full border border-black/10" style={{ background: p.color }} />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 min-w-0 flex-1 justify-start truncate px-1 text-left text-xs font-normal text-slate-300 hover:text-white"
+                              title={`套用：序号 ${p.numberR} · 文字 ${p.textSize}px · 打码 ${p.mosaicTile}px`}
+                              onClick={() => applyPreset(p)}
+                            >
+                              {p.name}
+                              <span className="ml-1.5 shrink-0 text-[10px] text-slate-400">
+                                序{p.numberR} · 字{p.textSize} · 码{p.mosaicTile}
+                              </span>
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`删除样式预设：${p.name}`}
+                              className="size-7 shrink-0 text-slate-300 hover:bg-destructive/10 hover:text-destructive"
+                              title="删除预设"
+                              onClick={() => deletePreset(p.id)}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {/* 选中标注的尺寸调节 */}
+            {selectedAnn?.kind === 'text' && (
+              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+                字号
+                <Slider
+                  min={16}
+                  max={80}
+                  value={[selectedAnn.size ?? 26]}
+                  onValueChange={([size]) => updateAnnSize({ size })}
+                  className="w-20"
+                  aria-label="文字字号"
+                />
+                <span className="w-6 tabular-nums">{selectedAnn.size ?? 26}</span>
+              </label>
+            )}
+            {selectedAnn?.kind === 'number' && (
+              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+                序号大小
+                <Slider
+                  min={12}
+                  max={56}
+                  value={[selectedAnn.r ?? 20]}
+                  onValueChange={([r]) => updateAnnSize({ r })}
+                  className="w-20"
+                  aria-label="序号大小"
+                />
+                <span className="w-6 tabular-nums">{selectedAnn.r ?? 20}</span>
+              </label>
+            )}
+            {(selectedAnn?.kind === 'arrow' || selectedAnn?.kind === 'line' || selectedAnn?.kind === 'freehand') && (
+              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+                {selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
+                <Slider
+                  min={2}
+                  max={16}
+                  value={[selectedAnn.width ?? ARROW_DEFAULT_WIDTH]}
+                  onValueChange={([width]) => updateAnnSize({ width })}
+                  className="w-20"
+                  aria-label={selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
+                />
+                <span className="w-6 tabular-nums">{selectedAnn.width ?? ARROW_DEFAULT_WIDTH}</span>
+              </label>
+            )}
+            {selectedAnn?.kind === 'mosaic' && (
+              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+                打码强度
+                <Slider
+                  min={MOSAIC_MIN_TILE}
+                  max={MOSAIC_MAX_TILE}
+                  value={[selectedAnn.tile ?? MOSAIC_DEFAULT_TILE]}
+                  onValueChange={([tile]) => updateAnnSize({ tile })}
+                  className="w-20"
+                  aria-label="打码强度"
+                />
+                <span className="w-8 tabular-nums">{selectedAnn.tile ?? MOSAIC_DEFAULT_TILE}px</span>
+              </label>
+            )}
+            {selectedAnn?.kind === 'magnifier' && (
+              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+                放大倍率
+                <Slider min={1.5} max={4} step={0.1} value={[selectedAnn.zoom]} onValueChange={([zoom]) => updateAnnSize({ zoom })} className="w-20" aria-label="放大倍率" />
+                <span className="w-8 tabular-nums">{selectedAnn.zoom.toFixed(1)}×</span>
+              </label>
+            )}
+            {selectedAnn?.kind === 'mosaic' && (
+              <span className="text-[11px] text-slate-400">数值越大越模糊，二维码建议 ≥ 24px</span>
+            )}
+            {selectedPage?.orig && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 rounded-lg px-2 text-xs text-slate-300 hover:bg-white/10 hover:text-white"
+                title="恢复将回到裁剪前的图片与标注（裁剪后新增的标注会丢失）"
+                onClick={() => restoreCrop(selectedPage)}
+              >
+                <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                恢复原图
+              </Button>
+            )}
+
+
+            {selectedAnn && (selectedAnn.kind === 'text' || selectedAnn.kind === 'callout') && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" className="size-8 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="编辑标注文字" title="编辑标注文字">
+                    <Type className="size-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 border-white/10 bg-slate-950 text-slate-100" align="center">
+                  <label className="space-y-2 text-xs text-slate-300">文字内容
+                    <Textarea aria-label="标注文字内容" className="mt-2 min-h-20 resize-y border-white/15 bg-white/10 text-slate-100" value={selectedAnn.text} onChange={e => updateAnnSize({ text: e.target.value })} />
+                  </label>
+                </PopoverContent>
+              </Popover>
+            )}
+            {selectedAnn && selectedPage && <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 pl-2">
+              <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="复制标注" title="复制标注" onClick={() => { const shifted = 'points' in selectedAnn ? { ...selectedAnn, points: selectedAnn.points.map(p => ({ x: p.x + 12, y: p.y + 12 })) } : 'x1' in selectedAnn ? { ...selectedAnn, x1: selectedAnn.x1 + 12, y1: selectedAnn.y1 + 12, x2: selectedAnn.x2 + 12, y2: selectedAnn.y2 + 12 } : { ...selectedAnn, x: selectedAnn.x + 12, y: selectedAnn.y + 12 }; const copy = { ...shifted, id: uid() }; updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" /></Button>
+              <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="标注置顶" title="标注置顶" onClick={() => updatePage(selectedPage.id, { annotations: [...selectedPage.annotations.filter(a => a.id !== selectedAnn.id), selectedAnn] })}><ArrowUpToLine className="size-4" /></Button>
+              <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="标注置底" title="标注置底" onClick={() => updatePage(selectedPage.id, { annotations: [selectedAnn, ...selectedPage.annotations.filter(a => a.id !== selectedAnn.id)] })}><ArrowDownToLine className="size-4" /></Button>
+              <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" aria-label="删除标注" title="删除标注" onClick={() => { updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => a.id !== selectedAnn.id) }); setSelectedAnnId(null) }}><Trash2 className="size-4" /></Button>
+            </div>}
+          </div>
+          <div className="toolbar-surface flex max-w-full items-center gap-1 rounded-2xl px-1.5 py-1.5">
+            <div role="toolbar" aria-label="标注工具" className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
+              {orderedTools.map((t) => (
+                <Tooltip key={t.value}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setTool(t.value)}
+                      draggable={reorderingTools}
+                      onDragStart={e => { draggedTool.current = t.value; e.dataTransfer.effectAllowed = 'move' }}
+                      onDragOver={e => { if (reorderingTools) e.preventDefault() }}
+                      onDrop={e => { e.preventDefault(); if (draggedTool.current) moveTool(draggedTool.current, t.value); draggedTool.current = null }}
+                      onKeyDown={e => {
+                        if (!reorderingTools || !e.altKey || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return
+                        e.preventDefault()
+                        const index = toolOrder.indexOf(t.value)
+                        const neighbor = toolOrder[index + (e.key === 'ArrowLeft' ? -1 : 1)]
+                        if (neighbor) moveTool(t.value, neighbor, e.key === 'ArrowRight')
+                      }}
+                      aria-label={t.label}
+                      aria-pressed={tool === t.value}
+                      title={`${t.label}（${t.shortcut}）${reorderingTools ? ' · 拖动排序，或 Alt+←/→' : ''}`}
+                      className={`flex size-10 shrink-0 items-center justify-center rounded-xl transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${tool === t.value ? 'bg-sky-200 text-slate-950 shadow-[0_2px_10px_rgba(0,0,0,0.25)]' : 'text-slate-300 hover:bg-white/10 hover:text-white'} ${reorderingTools ? 'cursor-grab ring-1 ring-sky-300/30' : ''}`}
+                    >
+                      {t.icon}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <span className="flex items-center gap-3">
+                      {t.label}
+                      <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px]">{t.shortcut}</kbd>
+                    </span>
+                  </TooltipContent>
+                </Tooltip>
+              ))}
+            </div>
+            <div className="ml-1 shrink-0 border-l border-white/10 pl-1.5">
+              <Button variant="ghost" size="sm" className={`h-10 gap-1.5 rounded-xl px-2.5 text-xs ${reorderingTools ? 'bg-sky-400/15 text-sky-200 hover:bg-sky-400/25' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`} aria-pressed={reorderingTools} onClick={() => setReorderingTools(v => !v)} title={reorderingTools ? '完成工具排序' : '调整工具顺序'}><GripVertical className="size-4" />{reorderingTools ? '完成' : '排序'}</Button>
+            </div>
+          </div>
+
+            </div>
+          </div>
           <div className="flex shrink-0 flex-wrap items-center gap-1 border-t bg-card px-3 py-1 text-xs">
             <span className="mr-auto text-muted-foreground">空格 + 拖动平移</span>
             {/* 画布缩放 */}
@@ -1119,238 +1405,7 @@ export default function Home() {
         {rightOpen && <PanelResizeHandle label="调整检查器宽度" width={rightWidth} min={260} max={440} direction={-1} onChange={setRightWidth} />}
         <aside className={`${rightOpen ? 'flex' : 'hidden'} shrink-0 flex-col border-l bg-card`} style={{ width: rightWidth, maxWidth: `calc(100vw - ${leftOpen ? leftWidth : 0}px - 380px)` }} aria-label="编辑检查器">
           <div className="flex shrink-0 gap-1 border-b p-2" role="tablist" aria-label="检查器面板">
-            {([['properties', '属性'], ['notes', '步骤说明'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
-          </div>
-          <div className={`${inspector === 'properties' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col gap-5 overflow-auto p-4`}>
-            <div><h2 className="text-sm font-semibold">{selectedAnn ? '当前标注' : '新建标注默认样式'}</h2><p className="mt-1 text-xs text-muted-foreground">{selectedAnn ? '修改下方属性会应用到选中的标注。' : '在画布中选择标注可编辑其属性。'}</p></div>
-
-            {(!selectedAnn || 'color' in selectedAnn) && <div className="flex items-center gap-1 rounded-md border bg-background px-1 py-0.5">
-              {COLORS.map((c) => (
-                <Button
-                  key={c}
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => selectedAnn && 'color' in selectedAnn ? updateAnnSize({ color: c }) : setColor(c)}
-                  aria-label={`标注颜色 ${c}`}
-                  aria-pressed={(selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c}
-                  className={`size-7 rounded-md p-0 ${
-                    (selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c ? 'bg-accent ring-1 ring-foreground/40' : 'hover:bg-muted'
-                  }`}
-                  title={`标注颜色 ${c}`}
-                >
-                  <span className={`size-3.5 rounded-full ring-1 ring-black/10 ${(selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c ? 'scale-110' : ''}`} style={{ background: c }} />
-                </Button>
-              ))}
-            </div>}
-
-            {/* 样式模板：新建标注默认样式 + 预设管理 */}
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-9 bg-background" title="样式模板">
-                  <Palette className="size-4" />
-                  新建标注默认样式
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-72" align="start">
-                <div className="space-y-3">
-                  <div className="text-xs font-medium text-slate-600">
-                    新建标注默认样式（与当前对象属性独立）
-                  </div>
-                  <div className="flex gap-2">{COLORS.map(c => <button key={c} aria-label={`新建默认颜色 ${c}`} aria-pressed={annStyle.color === c} className="size-6 rounded-full border-2 aria-pressed:border-foreground" style={{ background: c }} onClick={() => setColor(c)} />)}</div>
-                  {(
-                    [
-                      { key: 'numberR', label: '序号大小', min: 12, max: 56 },
-                      { key: 'textSize', label: '文字字号', min: 16, max: 80 },
-                      { key: 'mosaicTile', label: '打码强度', min: MOSAIC_MIN_TILE, max: MOSAIC_MAX_TILE },
-                    ] as const
-                  ).map(({ key, label, min, max }) => (
-                    <label key={key} className="flex items-center gap-2 text-xs text-slate-500">
-                      {label}
-                      <Slider
-                        min={min}
-                        max={max}
-                        value={[annStyle[key]]}
-                        onValueChange={([value]) => setAnnStyle((s) => ({ ...s, [key]: value }))}
-                        className="mx-1 flex-1"
-                        aria-label={label}
-                      />
-                      <span className="w-8 text-right tabular-nums">
-                        {annStyle[key]}
-                        {key === 'mosaicTile' ? 'px' : ''}
-                      </span>
-                    </label>
-                  ))}
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="h-8 w-full text-xs"
-                    disabled={!pages.length}
-                    title="把当前样式应用到所有页面的已有标注（可用 Ctrl+Z 撤销）"
-                    onClick={() => {
-                      if (window.confirm('将把全部已有标注统一为当前样式（可用撤销恢复），继续？')) applyStyleToAll()
-                    }}
-                  >
-                    套用当前样式到全部页面
-                  </Button>
-
-                  <div className="border-t pt-3">
-                    <div className="mb-2 text-xs font-medium text-slate-600">样式预设</div>
-                    <div className="mb-2 flex gap-1.5">
-                      <Input
-                        value={presetName}
-                        onChange={(e) => setPresetName(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && savePreset()}
-                        placeholder="预设名称，如：银行红-大字号"
-                        className="h-8 flex-1 text-xs"
-                      />
-                      <Button size="sm" className="h-8 px-2 text-xs" disabled={!presetName.trim()} onClick={savePreset}>
-                        保存
-                      </Button>
-                    </div>
-                    {presets.length === 0 ? (
-                      <p className="text-[11px] text-slate-400">
-                        还没有预设。调好上面的样式后输入名称保存，之后一键套用。
-                      </p>
-                    ) : (
-                      <div className="space-y-1">
-                        {presets.map((p) => (
-                          <div
-                            key={p.id}
-                            className="group flex items-center gap-2 rounded border border-slate-200 px-2 py-1.5"
-                          >
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`套用样式预设：${p.name}`}
-                              className="size-7 shrink-0 rounded-md p-0"
-                              title="套用此预设"
-                              onClick={() => applyPreset(p)}
-                            >
-                              <span className="size-3.5 rounded-full border border-black/10" style={{ background: p.color }} />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 min-w-0 flex-1 justify-start truncate px-1 text-left text-xs font-normal text-muted-foreground hover:text-primary"
-                              title={`套用：序号 ${p.numberR} · 文字 ${p.textSize}px · 打码 ${p.mosaicTile}px`}
-                              onClick={() => applyPreset(p)}
-                            >
-                              {p.name}
-                              <span className="ml-1.5 shrink-0 text-[10px] text-muted-foreground/75">
-                                序{p.numberR} · 字{p.textSize} · 码{p.mosaicTile}
-                              </span>
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`删除样式预设：${p.name}`}
-                              className="size-7 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                              title="删除预设"
-                              onClick={() => deletePreset(p.id)}
-                            >
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </PopoverContent>
-            </Popover>
-
-            {/* 选中标注的尺寸调节 */}
-            {selectedAnn?.kind === 'text' && (
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                字号
-                <Slider
-                  min={16}
-                  max={80}
-                  value={[selectedAnn.size ?? 26]}
-                  onValueChange={([size]) => updateAnnSize({ size })}
-                  className="w-28"
-                  aria-label="文字字号"
-                />
-                <span className="w-6 tabular-nums">{selectedAnn.size ?? 26}</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'number' && (
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                序号大小
-                <Slider
-                  min={12}
-                  max={56}
-                  value={[selectedAnn.r ?? 20]}
-                  onValueChange={([r]) => updateAnnSize({ r })}
-                  className="w-28"
-                  aria-label="序号大小"
-                />
-                <span className="w-6 tabular-nums">{selectedAnn.r ?? 20}</span>
-              </label>
-            )}
-            {(selectedAnn?.kind === 'arrow' || selectedAnn?.kind === 'line' || selectedAnn?.kind === 'freehand') && (
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                {selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
-                <Slider
-                  min={2}
-                  max={16}
-                  value={[selectedAnn.width ?? ARROW_DEFAULT_WIDTH]}
-                  onValueChange={([width]) => updateAnnSize({ width })}
-                  className="w-28"
-                  aria-label={selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
-                />
-                <span className="w-6 tabular-nums">{selectedAnn.width ?? ARROW_DEFAULT_WIDTH}</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'mosaic' && (
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                打码强度
-                <Slider
-                  min={MOSAIC_MIN_TILE}
-                  max={MOSAIC_MAX_TILE}
-                  value={[selectedAnn.tile ?? MOSAIC_DEFAULT_TILE]}
-                  onValueChange={([tile]) => updateAnnSize({ tile })}
-                  className="w-28"
-                  aria-label="打码强度"
-                />
-                <span className="w-8 tabular-nums">{selectedAnn.tile ?? MOSAIC_DEFAULT_TILE}px</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'magnifier' && (
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                放大倍率
-                <Slider min={1.5} max={4} step={0.1} value={[selectedAnn.zoom]} onValueChange={([zoom]) => updateAnnSize({ zoom })} className="w-28" aria-label="放大倍率" />
-                <span className="w-8 tabular-nums">{selectedAnn.zoom.toFixed(1)}×</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'mosaic' && (
-              <span className="text-[11px] text-slate-400">数值越大越模糊，二维码建议 ≥ 24px</span>
-            )}
-            {selectedPage?.orig && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-slate-500"
-                title="恢复将回到裁剪前的图片与标注（裁剪后新增的标注会丢失）"
-                onClick={() => restoreCrop(selectedPage)}
-              >
-                <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                恢复原图
-              </Button>
-            )}
-
-
-            {selectedAnn && (selectedAnn.kind === 'text' || selectedAnn.kind === 'callout') && <label className="space-y-2 text-xs">文字内容<Textarea aria-label="标注文字内容" value={selectedAnn.text} onChange={e => updateAnnSize({ text: e.target.value })} /></label>}
-            {selectedAnn && selectedPage && <div className="flex flex-wrap gap-2 border-t pt-3">
-              <Button variant="outline" size="sm" onClick={() => { const shifted = 'points' in selectedAnn ? { ...selectedAnn, points: selectedAnn.points.map(p => ({ x: p.x + 12, y: p.y + 12 })) } : 'x1' in selectedAnn ? { ...selectedAnn, x1: selectedAnn.x1 + 12, y1: selectedAnn.y1 + 12, x2: selectedAnn.x2 + 12, y2: selectedAnn.y2 + 12 } : { ...selectedAnn, x: selectedAnn.x + 12, y: selectedAnn.y + 12 }; const copy = { ...shifted, id: uid() }; updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" />复制</Button>
-              <Button variant="outline" size="sm" onClick={() => updatePage(selectedPage.id, { annotations: [...selectedPage.annotations.filter(a => a.id !== selectedAnn.id), selectedAnn] })}>置顶</Button>
-              <Button variant="outline" size="sm" onClick={() => updatePage(selectedPage.id, { annotations: [selectedAnn, ...selectedPage.annotations.filter(a => a.id !== selectedAnn.id)] })}>置底</Button>
-              <Button variant="outline" size="sm" onClick={() => { updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => a.id !== selectedAnn.id) }); setSelectedAnnId(null) }}>删除</Button>
-            </div>}
+            {([['notes', '步骤说明'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
           </div>
           <div className={`${inspector === 'notes' ? 'block' : 'hidden'} min-h-0 flex-1 overflow-auto`}>
           {/* 本页说明 */}
@@ -1385,7 +1440,8 @@ export default function Home() {
         />          </div>
         </aside>
       </div>
-      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{TOOLS.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
+      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{orderedTools.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
+      <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会自动下载当前项目的 JSON 备份。浏览器自动保存只保留当前项目。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
       <ExportPreview
         title={title}
         pages={pages}

@@ -66,6 +66,35 @@
   }
 }
 
+@layer components {
+  .toolbar-surface {
+    color: #f8fafc;
+    background: linear-gradient(145deg, rgba(31, 41, 55, 0.96), rgba(15, 23, 42, 0.96));
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    box-shadow: 0 20px 48px -20px rgba(15, 23, 42, 0.7), 0 4px 14px rgba(15, 23, 42, 0.18);
+    backdrop-filter: blur(20px);
+  }
+
+  .toolbar-surface [data-slot="slider-track"] {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .toolbar-surface [data-slot="slider-range"] {
+    background: #bae6fd;
+  }
+
+  .toolbar-surface [data-slot="slider-thumb"] {
+    border-color: #bae6fd;
+    background: #f8fafc;
+  }
+
+  .toolbar-surface [role="toolbar"] button svg {
+    width: 20px;
+    height: 20px;
+    stroke-width: 1.9;
+  }
+}
+
 @layer base {
   * {
     @apply border-border;

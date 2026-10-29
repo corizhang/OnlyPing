@@ -1,10 +1,14 @@
+import { hitArea, isAreaAnnotation, renderAreaAnnotation } from '@/lib/tools/area'
+import { createAnnotation } from '@/lib/tools'
+import { hitMark, isMarkAnnotation, renderMarkAnnotation } from '@/lib/tools/mark'
+import { createContentAnnotation, hitContent, isContentAnnotation, renderContentAnnotation } from '@/lib/tools/content'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import type { Annotation, Page, Rect, Tool } from '@/types'
 import { loadImage, mosaicCanvasRegion, renderPageToCanvas } from '@/lib/render'
-import { ARROW_DEFAULT_WIDTH, MOSAIC_DEFAULT_TILE, uid } from '@/types'
+import { MOSAIC_DEFAULT_TILE, uid } from '@/types'
 
 interface Props {
   page: Page
@@ -17,6 +21,7 @@ interface Props {
   numberR: number
   /** 新建文字标注的字号 */
   textSize: number
+  strokeWidth: number
   selectedId: string | null
   onSelect: (id: string | null) => void
   onChange: (annotations: Annotation[]) => void
@@ -36,7 +41,6 @@ type DragState =
   | { mode: 'crop-move'; startX: number; startY: number; snapshot: Rect }
   | { mode: 'crop-draw'; startX: number; startY: number }
 
-const BADGE_R = 20 // 序号圆半径（原始坐标）
 const HANDLES: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 
 const handlePos = (r: Rect, h: ResizeHandle) => {
@@ -73,29 +77,6 @@ const HANDLE_CURSOR: Record<ResizeHandle, string> = {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
-/** 点到线段的距离 */
-const distToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
-  const dx = x2 - x1
-  const dy = y2 - y1
-  const lenSq = dx * dx + dy * dy
-  const t = lenSq === 0 ? 0 : clamp(((px - x1) * dx + (py - y1) * dy) / lenSq, 0, 1)
-  const cx = x1 + t * dx
-  const cy = y1 + t * dy
-  return Math.hypot(px - cx, py - cy)
-}
-
-/** 箭头头部三角形的三个顶点（尖端 + 两个底角） */
-export const arrowHeadPoints = (x1: number, y1: number, x2: number, y2: number, width: number) => {
-  const ang = Math.atan2(y2 - y1, x2 - x1)
-  const len = width * 3.2
-  const half = width * 1.7
-  const bx = x2 - len * Math.cos(ang)
-  const by = y2 - len * Math.sin(ang)
-  const nx = -Math.sin(ang)
-  const ny = Math.cos(ang)
-  return `${x2},${y2} ${bx + half * nx},${by + half * ny} ${bx - half * nx},${by - half * ny}`
-}
-
 /** 根据拖拽点和对侧固定的手柄，计算新矩形（钳制在图内，不小于 minSize） */
 function resizeRect(s: Rect, handle: ResizeHandle, px: number, py: number, bounds: { w: number; h: number }, minSize: number): Rect {
   let { x, y, w, h } = s
@@ -116,7 +97,7 @@ function resizeRect(s: Rect, handle: ResizeHandle, px: number, py: number, bound
   return { x, y, w, h }
 }
 
-export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, selectedId, onSelect, onChange, onZoomChange, onCrop }: Props) {
+export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, onSelect, onChange, onZoomChange, onCrop }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
   const baseImageRef = useRef<HTMLImageElement | null>(null)
@@ -242,40 +223,12 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     (x: number, y: number): Annotation | null => {
       const list = [...page.annotations].reverse()
       for (const ann of list) {
-        if (ann.kind === 'number') {
-          const r = ann.r ?? BADGE_R
-          const dx = x - ann.x
-          const dy = y - ann.y
-          if (dx * dx + dy * dy <= r * r) return ann
-        } else if (ann.kind === 'arrow') {
-          const w = ann.width ?? ARROW_DEFAULT_WIDTH
-          if (distToSegment(x, y, ann.x1, ann.y1, ann.x2, ann.y2) <= Math.max(10, w)) return ann
-        } else if (ann.kind === 'line') {
-          if (distToSegment(x, y, ann.x1, ann.y1, ann.x2, ann.y2) <= Math.max(10, ann.width ?? 4)) return ann
-        } else if (ann.kind === 'freehand') {
-          if (ann.points.some((point, i) => i > 0 && distToSegment(x, y, ann.points[i - 1].x, ann.points[i - 1].y, point.x, point.y) <= Math.max(10, ann.width ?? 4))) return ann
-        } else if (ann.kind === 'text' || ann.kind === 'callout') {
-          if (ann.kind === 'callout') {
-            if (x >= ann.x - 6 && x <= ann.x + ann.w + 6 && y >= ann.y - 8 && y <= ann.y + ann.h + 10) return ann
-            continue
-          }
-          const size = ann.size ?? 26
-          const lineH = Math.round(size * 1.3)
-          const maxLen = Math.max(...ann.text.split('\n').map((l) => l.length), 1)
-          const lines = ann.text.split('\n').length
-          const padX = ann.background ? 12 : 4
-          const top = ann.background ? ann.y - size - 6 : ann.y - 6
-          if (
-            x >= ann.x - padX &&
-            x <= ann.x + maxLen * size + padX &&
-            y >= top &&
-            y <= ann.y + lines * lineH + 16
-          )
-            return ann
-        } else {
-          const pad = 4
-          if (x >= ann.x - pad && x <= ann.x + ann.w + pad && y >= ann.y - pad && y <= ann.y + ann.h + pad)
-            return ann
+        if (isMarkAnnotation(ann)) {
+          if (hitMark(ann, x, y)) return ann
+        } else if (isContentAnnotation(ann)) {
+          if (hitContent(ann, x, y)) return ann
+        } else if (isAreaAnnotation(ann) && hitArea(ann, x, y)) {
+          return ann
         }
       }
       return null
@@ -297,16 +250,9 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       if (text) updateAnnotation(editing.id, { text })
       else onChange(page.annotations.filter((a) => a.id !== editing.id))
     } else if (text) {
-      const ann: Annotation = {
-        id: uid(),
-        kind: 'text',
-        x: textPosRef.current.x,
-        y: textPosRef.current.y,
-        text,
-        color,
-        size: textSize,
-        background: textPosRef.current.background,
-      }
+      const ann = createContentAnnotation('text', uid(), textPosRef.current.x, textPosRef.current.y, {
+        text, color, textSize, background: textPosRef.current.background,
+      })
       onChange([...page.annotations, ann])
       onSelect(ann.id)
     }
@@ -330,34 +276,12 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       return
     }
 
-    if (tool === 'number') {
-      const ann: Annotation = { id: uid(), kind: 'number', x, y, r: numberR }
+    if (tool === 'number' || tool === 'arrow' || tool === 'line' || tool === 'freehand') {
+      const ann = createAnnotation(tool, x, y, { color, numberR, mosaicTile, strokeWidth })
       onChange([...page.annotations, ann])
       onSelect(ann.id)
-      return
-    }
-
-    if (tool === 'arrow') {
-      const ann: Annotation = { id: uid(), kind: 'arrow', x1: x, y1: y, x2: x, y2: y, color, width: ARROW_DEFAULT_WIDTH }
-      onChange([...page.annotations, ann])
-      onSelect(ann.id)
-      dragRef.current = { mode: 'arrow-end', id: ann.id, end: 'p2' }
-      return
-    }
-
-    if (tool === 'line') {
-      const ann: Annotation = { id: uid(), kind: 'line', x1: x, y1: y, x2: x, y2: y, color, width: 4 }
-      onChange([...page.annotations, ann])
-      onSelect(ann.id)
-      dragRef.current = { mode: 'arrow-end', id: ann.id, end: 'p2' }
-      return
-    }
-
-    if (tool === 'freehand') {
-      const ann: Annotation = { id: uid(), kind: 'freehand', points: [{ x, y }], color, width: 4 }
-      onChange([...page.annotations, ann])
-      onSelect(ann.id)
-      dragRef.current = { mode: 'freehand', id: ann.id }
+      if (tool === 'arrow' || tool === 'line') dragRef.current = { mode: 'arrow-end', id: ann.id, end: 'p2' }
+      if (tool === 'freehand') dragRef.current = { mode: 'freehand', id: ann.id }
       return
     }
 
@@ -390,20 +314,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     }
 
     // 矩形和聚焦工具：拖拽创建
-    const id = uid()
-    const ann: Annotation = tool === 'box'
-      ? { id, kind: 'box', x, y, w: 0, h: 0, color }
-      : tool === 'ellipse'
-        ? { id, kind: 'ellipse', x, y, w: 0, h: 0, color }
-        : tool === 'highlight'
-          ? { id, kind: 'highlight', x, y, w: 0, h: 0, color }
-      : tool === 'redact'
-            ? { id, kind: 'redact', x, y, w: 0, h: 0, color: '#111827' }
-            : tool === 'callout'
-              ? { id, kind: 'callout', x, y, w: 0, h: 0, text: '双击编辑说明', color }
-              : tool === 'magnifier'
-                ? { id, kind: 'magnifier', x, y, w: 0, h: 0, zoom: 2.5 }
-              : { id, kind: 'mosaic', x, y, w: 0, h: 0, tile: mosaicTile }
+    const ann = createAnnotation(tool as 'box' | 'ellipse' | 'highlight' | 'redact' | 'callout' | 'magnifier' | 'mosaic', x, y, { color, numberR, mosaicTile, strokeWidth })
     onChange([...page.annotations, ann])
     onSelect(ann.id)
     dragRef.current = { mode: 'create', kind: tool, startX: x, startY: y, id: ann.id }
@@ -614,254 +525,50 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
           />
           {page.annotations.map((ann) => {
             const isSel = ann.id === selectedId
-            if (ann.kind === 'box') {
+            if (isAreaAnnotation(ann)) {
               return (
                 <g key={ann.id}>
-                  <rect
-                    x={ann.x}
-                    y={ann.y}
-                    width={ann.w}
-                    height={ann.h}
-                    fill={ann.color + '22'}
-                    stroke={ann.color}
-                    strokeWidth={4}
-                  />
-                  {isSel && (
-                    <>
-                      <rect
-                        x={ann.x - 4}
-                        y={ann.y - 4}
-                        width={ann.w + 8}
-                        height={ann.h + 8}
-                        fill="none"
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        strokeDasharray="6 4"
-                      />
-                      {renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
-                    </>
-                  )}
-                </g>
-              )
-            }
-            if (ann.kind === 'ellipse' || ann.kind === 'highlight' || ann.kind === 'redact') {
-              const isEllipse = ann.kind === 'ellipse'
-              const isHighlight = ann.kind === 'highlight'
-              return (
-                <g key={ann.id}>
-                  {isEllipse ? (
-                    <ellipse cx={ann.x + ann.w / 2} cy={ann.y + ann.h / 2} rx={ann.w / 2} ry={ann.h / 2} fill="none" stroke={ann.color} strokeWidth={4} />
-                  ) : (
-                    <rect x={ann.x} y={ann.y} width={ann.w} height={ann.h}
-                      fill={isHighlight ? ann.color : ann.color}
-                      fillOpacity={isHighlight ? 0.38 : 1}
-                      stroke={isHighlight ? 'none' : ann.color} strokeWidth={isHighlight ? 0 : 1} />
-                  )}
-                  {isSel && <>
+                  {renderAreaAnnotation(ann, isSel)}
+                  {isSel && ann.kind !== 'mosaic' && (
                     <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
-                    {renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
-                  </>}
-                </g>
-              )
-            }
-            if (ann.kind === 'mosaic') {
-              return (
-                <g key={ann.id}>
-                  <rect
-                    x={ann.x}
-                    y={ann.y}
-                    width={ann.w}
-                    height={ann.h}
-                    fill="transparent"
-                    stroke={isSel ? '#2563eb' : 'rgba(37,99,235,0.4)'}
-                    strokeWidth={isSel ? 2.5 : 1.5}
-                    strokeDasharray="6 4"
-                  />
-                  {isSel && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
-                </g>
-              )
-            }
-            if (ann.kind === 'number') {
-              const r = ann.r ?? BADGE_R
-              return (
-                <g key={ann.id}>
-                  <circle
-                    cx={ann.x}
-                    cy={ann.y}
-                    r={r}
-                    fill="#ef4444"
-                    stroke="#ffffff"
-                    strokeWidth={Math.max(3, r / 6)}
-                  />
-                  <text
-                    x={ann.x}
-                    y={ann.y + 1}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="#ffffff"
-                    fontSize={r}
-                    fontWeight={700}
-                    fontFamily='"PingFang SC", "Microsoft YaHei", sans-serif'
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {numberStart + (numOf.get(ann.id) ?? 1)}
-                  </text>
-                  {isSel && (
-                    <circle
-                      cx={ann.x}
-                      cy={ann.y}
-                      r={r + 6}
-                      fill="none"
-                      stroke="#2563eb"
-                      strokeWidth={2}
-                      strokeDasharray="5 4"
-                    />
                   )}
+                  {isSel && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
                 </g>
               )
             }
-            if (ann.kind === 'arrow' || ann.kind === 'line') {
-              const w = ann.width ?? ARROW_DEFAULT_WIDTH
-              const onEndDown = (e: React.PointerEvent, end: 'p1' | 'p2') => {
-                e.stopPropagation()
-                ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
-                dragRef.current = { mode: 'arrow-end', id: ann.id, end }
-              }
+            if (isMarkAnnotation(ann)) {
               return (
                 <g key={ann.id}>
-                  <line
-                    x1={ann.x1}
-                    y1={ann.y1}
-                    x2={ann.x2}
-                    y2={ann.y2}
-                    stroke={ann.color}
-                    strokeWidth={w}
-                    strokeLinecap="round"
-                  />
-                  {ann.kind === 'arrow' && <polygon points={arrowHeadPoints(ann.x1, ann.y1, ann.x2, ann.y2, w)} fill={ann.color} />}
-                  {isSel && (
-                    <>
-                      <line
-                        x1={ann.x1}
-                        y1={ann.y1}
-                        x2={ann.x2}
-                        y2={ann.y2}
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        strokeDasharray="5 4"
-                        pointerEvents="none"
-                      />
-                      <circle
-                        cx={ann.x1}
-                        cy={ann.y1}
-                        r={handleR * 1.2}
-                        fill="#ffffff"
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        style={{ cursor: 'move' }}
-                        onPointerDown={(e) => onEndDown(e, 'p1')}
-                      />
-                      <circle
-                        cx={ann.x2}
-                        cy={ann.y2}
-                        r={handleR * 1.2}
-                        fill="#ffffff"
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        style={{ cursor: 'move' }}
-                        onPointerDown={(e) => onEndDown(e, 'p2')}
-                      />
-                    </>
+                  {renderMarkAnnotation(ann, {
+                    selected: isSel,
+                    label: numberStart + (numOf.get(ann.id) ?? 1),
+                    handleR,
+                    onEndpointDown: (event, end) => {
+                      event.stopPropagation()
+                      event.currentTarget.setPointerCapture(event.pointerId)
+                      dragRef.current = { mode: 'arrow-end', id: ann.id, end }
+                    },
+                  })}
+                </g>
+              )
+            }
+            if (isContentAnnotation(ann)) {
+              return (
+                <g key={ann.id}>
+                  {renderContentAnnotation(ann, {
+                    selected: isSel,
+                    scale,
+                    magnifierSource,
+                    pageWidth: page.width,
+                    pageHeight: page.height,
+                  })}
+                  {isSel && ann.kind === 'callout' && (
+                    <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
                   )}
+                  {isSel && ann.kind !== 'text' && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
                 </g>
               )
             }
-            if (ann.kind === 'freehand') {
-              const points = ann.points.map((point) => `${point.x},${point.y}`).join(' ')
-              return (
-                <g key={ann.id}>
-                  <polyline points={points} fill="none" stroke={ann.color} strokeWidth={ann.width ?? 4} strokeLinecap="round" strokeLinejoin="round" />
-                  {isSel && <polyline points={points} fill="none" stroke="#2563eb" strokeWidth={Math.max(10, (ann.width ?? 4) + 8)} strokeOpacity={0.18} strokeLinecap="round" strokeLinejoin="round" />}
-                </g>
-              )
-            }
-            if (ann.kind === 'callout') {
-              const tail = Math.min(18, Math.max(10, ann.w * 0.12))
-              const fontSize = Math.max(12, Math.min(18, ann.h * 0.38))
-              const charsPerLine = Math.max(1, Math.floor((ann.w - 20) / (fontSize * 0.95)))
-              const lines = ann.text.split('\n').flatMap((line) => {
-                const chars = Array.from(line)
-                return chars.length > charsPerLine
-                  ? Array.from({ length: Math.ceil(chars.length / charsPerLine) }, (_, i) => chars.slice(i * charsPerLine, (i + 1) * charsPerLine).join(''))
-                  : [line]
-              })
-              return (
-                <g key={ann.id}>
-                  <path d={`M${ann.x + 10} ${ann.y} H${ann.x + ann.w - 10} Q${ann.x + ann.w} ${ann.y} ${ann.x + ann.w} ${ann.y + 10} V${ann.y + ann.h - 10} Q${ann.x + ann.w} ${ann.y + ann.h} ${ann.x + ann.w - 10} ${ann.y + ann.h} H${ann.x + tail + 16} L${ann.x + 8} ${ann.y + ann.h + tail} L${ann.x + 12} ${ann.y + ann.h} H${ann.x + 10} Q${ann.x} ${ann.y + ann.h} ${ann.x} ${ann.y + ann.h - 10} V${ann.y + 10} Q${ann.x} ${ann.y} ${ann.x + 10} ${ann.y} Z`} fill="#fff" stroke={ann.color} strokeWidth={2.5} />
-                  <text x={ann.x + ann.w / 2} y={ann.y + ann.h / 2 - ((lines.length - 1) * fontSize * 1.25) / 2} textAnchor="middle" dominantBaseline="middle" fill={ann.color} fontSize={fontSize} fontWeight={600} pointerEvents="none">{lines.map((line, i) => <tspan key={i} x={ann.x + ann.w / 2} dy={i === 0 ? 0 : fontSize * 1.25}>{line}</tspan>)}</text>
-                  {isSel && <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />}
-                  {isSel && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
-                </g>
-              )
-            }
-            if (ann.kind === 'magnifier') {
-              const zoom = Math.min(4, Math.max(1.2, ann.zoom || 2.5))
-              const radius = Math.min(ann.w, ann.h) / 2
-              const cx = ann.x + ann.w / 2
-              const cy = ann.y + ann.h / 2
-              const clipId = `magnifier-${ann.id}`
-              return (
-                <g key={ann.id}>
-                  <defs><clipPath id={clipId}><circle cx={cx} cy={cy} r={radius - 2} /></clipPath></defs>
-                  {magnifierSource && <image href={magnifierSource} x={cx * (1 - zoom)} y={cy * (1 - zoom)} width={page.width * zoom} height={page.height * zoom} preserveAspectRatio="none" clipPath={`url(#${clipId})`} />}
-                  <circle cx={cx} cy={cy} r={radius - 1} fill="none" stroke="#fff" strokeWidth={6 / scale} />
-                  <circle cx={cx} cy={cy} r={radius - 1} fill="none" stroke="#1f2937" strokeOpacity={0.7} strokeWidth={2 / scale} />
-                  {isSel && <circle cx={cx} cy={cy} r={radius + 5 / scale} fill="none" stroke="#2563eb" strokeWidth={2 / scale} strokeDasharray={`${6 / scale} ${4 / scale}`} />}
-                  {isSel && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
-                </g>
-              )
-            }
-            // text
-            const textSize = ann.size ?? 26
-            const textLines = ann.text.split('\n')
-            const lineH = Math.round(textSize * 1.3)
-            const maxLen = Math.max(...textLines.map((l) => l.length), 1)
-            const textW = maxLen * textSize * 0.65
-            const textH = textLines.length * lineH
-            return (
-              <g key={ann.id}>
-                {ann.background && <rect x={ann.x - 6} y={ann.y - textSize - 4} width={textW + 12} height={textH + 10} rx={4} fill="#ffffff" stroke="#d1d5db" strokeWidth={1} />}
-                <text
-                  x={ann.x}
-                  y={ann.y}
-                  fontSize={textSize}
-                  fontWeight={700}
-                  fill={ann.color}
-                  stroke="rgba(255,255,255,0.95)"
-                  strokeWidth={Math.max(4, textSize / 4)}
-                  paintOrder="stroke"
-                  fontFamily='"PingFang SC", "Microsoft YaHei", sans-serif'
-                >
-                  {textLines.map((line, i) => (
-                    <tspan key={i} x={ann.x} dy={i === 0 ? 0 : lineH}>
-                      {line}
-                    </tspan>
-                  ))}
-                </text>
-                {isSel && (
-                  <rect
-                    x={ann.x - (ann.background ? 8 : 4)}
-                    y={ann.y - (ann.background ? textSize + 6 : 6)}
-                    width={textW + (ann.background ? 16 : 12)}
-                    height={textH + (ann.background ? 14 : 16)}
-                    fill="none"
-                    stroke="#2563eb"
-                    strokeWidth={2}
-                    strokeDasharray="5 4"
-                  />
-                )}
-              </g>
-            )
           })}
 
           {/* 裁剪选区：全图初始选区 + 八向手柄 */}

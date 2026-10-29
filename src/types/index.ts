@@ -176,6 +176,7 @@ export interface AnnotationStyle {
   numberR: number
   textSize: number
   mosaicTile: number
+  strokeWidth: number
 }
 
 export const DEFAULT_ANNOTATION_STYLE: AnnotationStyle = {
@@ -183,6 +184,7 @@ export const DEFAULT_ANNOTATION_STYLE: AnnotationStyle = {
   numberR: 20,
   textSize: 26,
   mosaicTile: MOSAIC_DEFAULT_TILE,
+  strokeWidth: 4,
 }
 
 /** 标注样式预设（用户级，保存在浏览器本地，可跨项目复用） */
