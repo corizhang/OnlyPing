@@ -486,7 +486,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       >
         <canvas
           ref={baseRef}
-          className="block h-auto w-full rounded-xl bg-background shadow-lg ring-1 ring-black/5"
+          className="block h-auto w-full bg-white shadow-[0_12px_36px_rgba(0,0,0,0.28)] ring-1 ring-black/20"
           style={{ width: displayW, height: page.height * scale }}
         />
         <svg

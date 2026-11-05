@@ -3,7 +3,6 @@ import { EditHistory } from '@/lib/history'
 import PanelResizeHandle from '@/components/PanelResizeHandle'
 import { useEffect, useRef, useState } from 'react'
 import {
-  PanelLeft,
   PanelRight,
   Keyboard,
   Copy,
@@ -151,12 +150,10 @@ export default function Home() {
   const [exporting, setExporting] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [zoomMode, setZoomMode] = useState<'fit' | 'width' | 'manual'>('fit')
-  const [leftOpen, setLeftOpen] = useState(true)
-  const [leftWidth, setLeftWidth] = useState(() => loadJSON('mbz-left-width', (v): v is number => typeof v === 'number' && v >= 180 && v <= 360) ?? 208)
   const [rightWidth, setRightWidth] = useState(() => loadJSON('mbz-right-width', (v): v is number => typeof v === 'number' && v >= 260 && v <= 440) ?? 288)
-  useEffect(() => { localStorage.setItem('mbz-left-width', JSON.stringify(leftWidth)); localStorage.setItem('mbz-right-width', JSON.stringify(rightWidth)) }, [leftWidth, rightWidth])
+  useEffect(() => { localStorage.setItem('mbz-right-width', JSON.stringify(rightWidth)) }, [rightWidth])
   const [rightOpen, setRightOpen] = useState(true)
-  const [inspector, setInspector] = useState<'notes' | 'ai'>('notes')
+  const [inspector, setInspector] = useState<'steps' | 'notes' | 'ai'>('steps')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const [spaceHeld, setSpaceHeld] = useState(false)
@@ -503,7 +500,7 @@ export default function Home() {
     const observer = new ResizeObserver(fit)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [selectedPage?.id, selectedPage?.width, selectedPage?.height, zoomMode, leftOpen, rightOpen])
+  }, [selectedPage?.id, selectedPage?.width, selectedPage?.height, zoomMode, rightOpen])
 
   const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number; zoom?: number; color?: string; text?: string }) => {
     if (!selectedPage || !selectedAnnId) return
@@ -769,7 +766,7 @@ export default function Home() {
           : { cls: 'bg-emerald-500', title: '检查通过' }
 
   return (
-    <div className="flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground"
+    <div className="ps-workspace flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground"
       onPointerDownCapture={() => { history.current.end(); gestureRef.current = true }}
       onFocusCapture={() => history.current.end()}
       onBlurCapture={() => history.current.end()}
@@ -777,21 +774,21 @@ export default function Home() {
     >
       <Toaster richColors position="bottom-right" />
       {/* 顶栏 */}
-      <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b bg-card px-3">
+      <header className="z-20 flex h-12 shrink-0 items-center justify-between border-b border-white/10 bg-[#292929] px-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-[#3e78a7] text-white">
             <BookOpen className="size-4" />
           </div>
           <div className="min-w-0">
             <div className="text-sm font-semibold leading-tight tracking-tight">明白纸工作台</div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">OnlyPing</div>
+            <div className="text-[10px] text-muted-foreground">OnlyPing</div>
           </div>
           <Separator orientation="vertical" className="mx-1 h-8" />
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             aria-label="项目标题"
-            className="h-9 w-52 border-transparent bg-transparent px-2 text-sm font-medium shadow-none hover:border-input focus-visible:bg-background"
+            className="h-8 w-52 border-transparent bg-transparent px-2 text-sm font-medium shadow-none hover:border-white/20 focus-visible:bg-[#353535]"
           />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -978,90 +975,10 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card px-3">
-        <Button variant="ghost" size="sm" aria-pressed={leftOpen} onClick={() => setLeftOpen(v => !v)}><PanelLeft className="size-4" />步骤</Button>
-        <span className="text-xs text-muted-foreground">{TOOLS.find(t => t.value === tool)?.label}</span>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setShortcutsOpen(true)}><Keyboard className="size-4" />快捷键</Button>
-        <Button variant="ghost" size="sm" aria-pressed={rightOpen} onClick={() => setRightOpen(v => !v)}><PanelRight className="size-4" />检查器</Button>
-      </div>
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {leftOpen && <><div className="h-full shrink-0" style={{ width: leftWidth, maxWidth: `calc(100vw - ${rightOpen ? rightWidth : 0}px - 380px)` }}><PageList
-          pages={pages}
-          selectedId={selectedPageId}
-          onImportFiles={importFiles}
-          onSelect={(id) => {
-            setSelectedPageId(id)
-            setSelectedAnnId(null)
-          }}
-          onMove={movePage}
-          onReorder={(sourceId, targetId) => commitPages(prev => {
-            const source = prev.find(p => p.id === sourceId)
-            if (!source || sourceId === targetId) return prev
-            const next = prev.filter(p => p.id !== sourceId)
-            const target = next.findIndex(p => p.id === targetId)
-            if (target < 0) return prev
-            next.splice(target, 0, source)
-            return next
-          })}
-          onRemove={removePage}
-          onDuplicate={(id) => { const source = pages.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }}
-        /></div><PanelResizeHandle label="调整步骤栏宽度" width={leftWidth} min={180} max={360} direction={1} onChange={setLeftWidth} /></>}
-
-        {/* 中间编辑区 */}
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div
-            ref={viewportRef}
-            className={`min-h-0 flex-1 overflow-auto bg-muted/70 p-4 pb-36 ${spaceHeld ? 'cursor-grab' : ''}`}
-            onPointerDownCapture={e => {
-              if (!spaceHeld && e.button !== 1) return
-              e.preventDefault(); e.stopPropagation()
-              e.currentTarget.setPointerCapture(e.pointerId)
-              panRef.current = { x: e.clientX, y: e.clientY, left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop }
-              suppressPanClick.current = true
-            }}
-            onPointerMoveCapture={e => {
-              const pan = panRef.current
-              if (!pan) return
-              e.stopPropagation()
-              e.currentTarget.scrollLeft = pan.left - (e.clientX - pan.x)
-              e.currentTarget.scrollTop = pan.top - (e.clientY - pan.y)
-            }}
-            onPointerUpCapture={e => { if (panRef.current) { e.stopPropagation(); panRef.current = null; e.currentTarget.releasePointerCapture(e.pointerId); setTimeout(() => { suppressPanClick.current = false }, 0) } }}
-            onPointerCancel={() => { panRef.current = null; suppressPanClick.current = false }}
-            onClickCapture={e => { if (suppressPanClick.current) { e.stopPropagation(); suppressPanClick.current = false } }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={importDropped}
-          >
-            {selectedPage ? (
-              <CanvasEditor
-                page={selectedPage}
-                tool={tool}
-                color={color}
-                zoom={zoom}
-                numberStart={numberStarts.get(selectedPage.id) ?? 0}
-                mosaicTile={annStyle.mosaicTile}
-                numberR={annStyle.numberR}
-                textSize={annStyle.textSize}
-                strokeWidth={annStyle.strokeWidth}
-                selectedId={selectedAnnId}
-                onSelect={setSelectedAnnId}
-                onChange={(annotations) => updatePage(selectedPage.id, { annotations })}
-                onZoomChange={manualZoom}
-                onCrop={(rect) => applyCrop(selectedPage, rect)}
-              />
-            ) : (
-              <div className="flex h-full min-h-80 flex-col items-center justify-center text-center text-muted-foreground">
-                <ImageIcon className="mb-3 size-6 text-muted-foreground/70" />
-                <p className="text-sm font-medium text-foreground">打开一张截图开始标注</p>
-                <p className="mt-1 text-xs">从左侧添加、粘贴或拖入图片</p>
-                <span className="mt-3 border bg-card px-2 py-1 text-[11px] font-medium">Ctrl + V</span>
-              </div>
-            )}
-          </div>
-
-          <div className="pointer-events-none absolute inset-x-0 bottom-14 z-20 flex justify-center px-3">
-            <div className="pointer-events-auto flex max-w-full flex-col items-center gap-2">
-          <div className="toolbar-surface flex max-w-full items-center gap-2 overflow-x-auto rounded-2xl px-2.5 py-2 text-xs">
+      <div className="flex h-11 shrink-0 items-center border-b border-white/10 bg-[#323232]">
+        <div className="flex h-full w-12 shrink-0 items-center justify-center border-r border-white/10 text-[#b9b9b9]" title="当前工具">{TOOLS.find(t => t.value === tool)?.icon}</div>
+        <span className="shrink-0 px-3 text-xs font-medium text-[#d8d8d8]">{TOOLS.find(t => t.value === tool)?.label}</span>
+          <div className="ps-options flex min-w-0 flex-1 items-center gap-2 overflow-x-auto px-3 text-xs">
             {(!selectedAnn || 'color' in selectedAnn) && <div className="flex shrink-0 items-center gap-0.5" aria-label="标注颜色">
               {COLORS.map((c) => (
                 <Button
@@ -1310,8 +1227,12 @@ export default function Home() {
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" aria-label="删除标注" title="删除标注" onClick={() => { updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => a.id !== selectedAnn.id) }); setSelectedAnnId(null) }}><Trash2 className="size-4" /></Button>
             </div>}
           </div>
-          <div className="toolbar-surface flex max-w-full items-center gap-1 rounded-2xl px-1.5 py-1.5">
-            <div role="toolbar" aria-label="标注工具" className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
+        <Button variant="ghost" size="sm" className="mx-2 shrink-0 text-xs text-[#bcbcbc]" onClick={() => setShortcutsOpen(true)}><Keyboard className="size-4" />快捷键</Button>
+        <Button variant="ghost" size="icon-sm" className="mr-2 shrink-0 text-[#bcbcbc]" aria-label="切换右侧面板" aria-pressed={rightOpen} onClick={() => setRightOpen(v => !v)}><PanelRight className="size-4" /></Button>
+      </div>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <nav className="flex w-12 shrink-0 flex-col border-r border-white/10 bg-[#272727]" aria-label="标注工具栏">
+          <div role="toolbar" aria-label="标注工具" className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto py-2">
               {orderedTools.map((t) => (
                 <Tooltip key={t.value}>
                   <TooltipTrigger asChild>
@@ -1323,16 +1244,16 @@ export default function Home() {
                       onDragOver={e => { if (reorderingTools) e.preventDefault() }}
                       onDrop={e => { e.preventDefault(); if (draggedTool.current) moveTool(draggedTool.current, t.value); draggedTool.current = null }}
                       onKeyDown={e => {
-                        if (!reorderingTools || !e.altKey || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return
+                        if (!reorderingTools || !e.altKey || !['ArrowUp', 'ArrowDown'].includes(e.key)) return
                         e.preventDefault()
                         const index = toolOrder.indexOf(t.value)
-                        const neighbor = toolOrder[index + (e.key === 'ArrowLeft' ? -1 : 1)]
-                        if (neighbor) moveTool(t.value, neighbor, e.key === 'ArrowRight')
+                        const neighbor = toolOrder[index + (e.key === 'ArrowUp' ? -1 : 1)]
+                        if (neighbor) moveTool(t.value, neighbor, e.key === 'ArrowDown')
                       }}
                       aria-label={t.label}
                       aria-pressed={tool === t.value}
-                      title={`${t.label}（${t.shortcut}）${reorderingTools ? ' · 拖动排序，或 Alt+←/→' : ''}`}
-                      className={`flex size-10 shrink-0 items-center justify-center rounded-xl transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${tool === t.value ? 'bg-sky-200 text-slate-950 shadow-[0_2px_10px_rgba(0,0,0,0.25)]' : 'text-slate-300 hover:bg-white/10 hover:text-white'} ${reorderingTools ? 'cursor-grab ring-1 ring-sky-300/30' : ''}`}
+                      title={`${t.label}（${t.shortcut}）${reorderingTools ? ' · 拖动排序，或 Alt+↑/↓' : ''}`}
+                      className={`flex size-9 shrink-0 items-center justify-center rounded-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${tool === t.value ? 'bg-[#4b80ad] text-white' : 'text-[#c3c3c3] hover:bg-white/10 hover:text-white'} ${reorderingTools ? 'cursor-grab ring-1 ring-sky-300/30' : ''}`}
                     >
                       {t.icon}
                     </button>
@@ -1345,15 +1266,67 @@ export default function Home() {
                   </TooltipContent>
                 </Tooltip>
               ))}
-            </div>
-            <div className="ml-1 shrink-0 border-l border-white/10 pl-1.5">
-              <Button variant="ghost" size="sm" className={`h-10 gap-1.5 rounded-xl px-2.5 text-xs ${reorderingTools ? 'bg-sky-400/15 text-sky-200 hover:bg-sky-400/25' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`} aria-pressed={reorderingTools} onClick={() => setReorderingTools(v => !v)} title={reorderingTools ? '完成工具排序' : '调整工具顺序'}><GripVertical className="size-4" />{reorderingTools ? '完成' : '排序'}</Button>
-            </div>
+          </div>
+          <Button variant="ghost" size="icon-sm" className={`mx-auto mb-2 size-9 shrink-0 rounded-sm text-[#bdbdbd] hover:bg-white/10 hover:text-white ${reorderingTools ? 'bg-[#4b80ad] text-white' : ''}`} aria-label={reorderingTools ? '完成工具排序' : '调整工具顺序'} aria-pressed={reorderingTools} onClick={() => setReorderingTools(v => !v)} title={reorderingTools ? '完成工具排序' : '拖动或按 Alt + ↑/↓ 调整工具顺序'}><GripVertical className="size-4" /></Button>
+        </nav>
+
+        {/* 中间编辑区 */}
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex h-8 shrink-0 items-center border-b border-white/10 bg-[#333333] px-2 text-[11px] text-[#c8c8c8]">
+            <span className="flex h-full max-w-64 items-center gap-2 border-x border-white/10 bg-[#454545] px-3"><ImageIcon className="size-3.5" /><span className="truncate">{selectedPage?.name || '未打开文档'}</span>{selectedPage && <span className="text-[#a3a3a3]">@ {Math.round(zoom * 100)}%</span>}</span>
+            {selectedPage && <span className="ml-3 text-[#999]">{selectedPage.width} × {selectedPage.height} px</span>}
+          </div>
+          <div
+            ref={viewportRef}
+            className={`min-h-0 flex-1 overflow-auto bg-[#454545] p-8 ${spaceHeld ? 'cursor-grab' : ''}`}
+            onPointerDownCapture={e => {
+              if (!spaceHeld && e.button !== 1) return
+              e.preventDefault(); e.stopPropagation()
+              e.currentTarget.setPointerCapture(e.pointerId)
+              panRef.current = { x: e.clientX, y: e.clientY, left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop }
+              suppressPanClick.current = true
+            }}
+            onPointerMoveCapture={e => {
+              const pan = panRef.current
+              if (!pan) return
+              e.stopPropagation()
+              e.currentTarget.scrollLeft = pan.left - (e.clientX - pan.x)
+              e.currentTarget.scrollTop = pan.top - (e.clientY - pan.y)
+            }}
+            onPointerUpCapture={e => { if (panRef.current) { e.stopPropagation(); panRef.current = null; e.currentTarget.releasePointerCapture(e.pointerId); setTimeout(() => { suppressPanClick.current = false }, 0) } }}
+            onPointerCancel={() => { panRef.current = null; suppressPanClick.current = false }}
+            onClickCapture={e => { if (suppressPanClick.current) { e.stopPropagation(); suppressPanClick.current = false } }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={importDropped}
+          >
+            {selectedPage ? (
+              <CanvasEditor
+                page={selectedPage}
+                tool={tool}
+                color={color}
+                zoom={zoom}
+                numberStart={numberStarts.get(selectedPage.id) ?? 0}
+                mosaicTile={annStyle.mosaicTile}
+                numberR={annStyle.numberR}
+                textSize={annStyle.textSize}
+                strokeWidth={annStyle.strokeWidth}
+                selectedId={selectedAnnId}
+                onSelect={setSelectedAnnId}
+                onChange={(annotations) => updatePage(selectedPage.id, { annotations })}
+                onZoomChange={manualZoom}
+                onCrop={(rect) => applyCrop(selectedPage, rect)}
+              />
+            ) : (
+              <div className="flex h-full min-h-80 flex-col items-center justify-center text-center text-muted-foreground">
+                <ImageIcon className="mb-3 size-6 text-muted-foreground/70" />
+                <p className="text-sm font-medium text-foreground">打开一张截图开始标注</p>
+                <p className="mt-1 text-xs">从右侧添加、粘贴或拖入图片</p>
+                <span className="mt-3 border bg-card px-2 py-1 text-[11px] font-medium">Ctrl + V</span>
+              </div>
+            )}
           </div>
 
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-1 border-t bg-card px-3 py-1 text-xs">
+          <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-white/10 bg-[#292929] px-3 py-1 text-xs">
             <span className="mr-auto text-muted-foreground">空格 + 拖动平移</span>
             {/* 画布缩放 */}
             <div className="ml-auto flex items-center gap-0.5 rounded-md border bg-background p-0.5">
@@ -1403,9 +1376,32 @@ export default function Home() {
         </div>
 
         {rightOpen && <PanelResizeHandle label="调整检查器宽度" width={rightWidth} min={260} max={440} direction={-1} onChange={setRightWidth} />}
-        <aside className={`${rightOpen ? 'flex' : 'hidden'} shrink-0 flex-col border-l bg-card`} style={{ width: rightWidth, maxWidth: `calc(100vw - ${leftOpen ? leftWidth : 0}px - 380px)` }} aria-label="编辑检查器">
+        <aside className={`${rightOpen ? 'flex' : 'hidden'} shrink-0 flex-col border-l border-white/10 bg-[#262626]`} style={{ width: rightWidth, maxWidth: `calc(100vw - 430px)` }} aria-label="编辑检查器">
           <div className="flex shrink-0 gap-1 border-b p-2" role="tablist" aria-label="检查器面板">
-            {([['notes', '步骤说明'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
+            {([['steps', '步骤图片'], ['notes', '步骤说明'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
+          </div>
+          <div className={`${inspector === 'steps' ? 'block' : 'hidden'} min-h-0 flex-1 overflow-hidden`}>
+<PageList
+          pages={pages}
+          selectedId={selectedPageId}
+          onImportFiles={importFiles}
+          onSelect={(id) => {
+            setSelectedPageId(id)
+            setSelectedAnnId(null)
+          }}
+          onMove={movePage}
+          onReorder={(sourceId, targetId) => commitPages(prev => {
+            const source = prev.find(p => p.id === sourceId)
+            if (!source || sourceId === targetId) return prev
+            const next = prev.filter(p => p.id !== sourceId)
+            const target = next.findIndex(p => p.id === targetId)
+            if (target < 0) return prev
+            next.splice(target, 0, source)
+            return next
+          })}
+          onRemove={removePage}
+          onDuplicate={(id) => { const source = pages.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }}
+        />
           </div>
           <div className={`${inspector === 'notes' ? 'block' : 'hidden'} min-h-0 flex-1 overflow-auto`}>
           {/* 本页说明 */}
