@@ -650,41 +650,6 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
         )}
       </div>
 
-      {tool === 'crop' ? (
-        <div className="mt-2 text-xs text-emerald-600">
-          拖动四角/四边或整体移动选区，调整好后点击画布下方的「完成裁剪」；在选区外拖拽可重新框选（Esc 重置选区）
-        </div>
-      ) : (
-        selected && (
-          <div className="mt-2 text-xs text-slate-500">
-            已选中
-            {selected.kind === 'box'
-              ? '画框'
-              : selected.kind === 'ellipse'
-                ? '椭圆'
-                : selected.kind === 'highlight'
-                  ? '高亮'
-                  : selected.kind === 'redact'
-                    ? '遮挡'
-                    : selected.kind === 'mosaic'
-                ? '打码区域'
-                : selected.kind === 'number'
-                  ? `序号 ${numberStart + (numOf.get(selected.id) ?? 1)}`
-                    : selected.kind === 'arrow'
-                      ? '箭头'
-                      : selected.kind === 'line'
-                        ? '直线'
-                        : selected.kind === 'freehand'
-                          ? '自由画笔'
-                          : selected.kind === 'callout'
-                            ? '说明气泡'
-                          : selected.kind === 'magnifier'
-                            ? '局部放大'
-                            : selected.kind === 'text' && selected.background ? '文字框' : '文字'}
-            ，可拖动位置或四角/四边调整大小，Ctrl+D 复制，Delete 删除
-          </div>
-        )
-      )}
     </div>
   )
 }

@@ -80,7 +80,7 @@ const annotation = z.discriminatedUnion('kind', [
 const image = z.string().regex(/^data:image\/(png|jpeg|webp|gif);base64,/)
 const annotations = z.array(annotation).refine(items => new Set(items.map(a => a.id)).size === items.length)
 const snapshot = { image, width: positive, height: positive, annotations }
-const page = z.object({ id: z.string().min(1), name: z.string().default('未命名步骤'), notes: z.string().default(''), ...snapshot, orig: z.object(snapshot).optional() })
+const page = z.object({ id: z.string().min(1), name: z.string().default('未命名步骤'), notes: z.string().default(''), notesRich: z.string().optional(), ...snapshot, orig: z.object(snapshot).optional() })
 const align = z.enum(['left', 'center', 'right'])
 const project = z.object({
   schemaVersion: z.literal(1).optional(),

@@ -4,6 +4,7 @@ import { jsPDF } from 'jspdf'
 import type { ExportFooter, ExportStyle, Page } from '@/types'
 import { computeNumberStarts, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE } from '@/types'
 import { dataUrlToBase64, renderPageToCanvas } from './render'
+import { safeNotesHtml } from './notes'
 
 function download(blob: Blob, filename: string) {
   const a = document.createElement('a')
@@ -31,6 +32,43 @@ const wordAlignment = (alignment: ExportStyle['titleAlign']) => ({
   right: AlignmentType.RIGHT,
 })[alignment]
 
+/** Convert the supported notes markup to editable Word paragraphs and text runs. */
+function wordNotes(page: Page, style: ExportStyle): Paragraph[] {
+  const container = document.createElement('div')
+  container.innerHTML = safeNotesHtml(page)
+  const size = Math.round(style.notes * 2)
+  const runs = (node: Node, marks = { bold: false, italics: false, strike: false }): TextRun[] => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent ? [new TextRun({ text: node.textContent, size, ...marks })] : []
+    }
+    if (!(node instanceof HTMLElement)) return []
+    if (node.tagName === 'BR') return [new TextRun({ text: '', break: 1, size })]
+    const next = {
+      bold: marks.bold || node.tagName === 'STRONG',
+      italics: marks.italics || node.tagName === 'EM',
+      strike: marks.strike || node.tagName === 'S',
+    }
+    return Array.from(node.childNodes).flatMap(child => runs(child, next))
+  }
+  const alignment = wordAlignment(style.notesAlign ?? 'left')
+  const paragraphs: Paragraph[] = []
+  for (const block of Array.from(container.childNodes)) {
+    if (!(block instanceof HTMLElement)) continue
+    if (block.tagName === 'UL' || block.tagName === 'OL') {
+      Array.from(block.children).forEach((item, index) => {
+        paragraphs.push(new Paragraph({
+          alignment,
+          indent: { left: 320 },
+          children: [new TextRun({ text: block.tagName === 'UL' ? '•  ' : `${index + 1}.  `, size }), ...runs(item)],
+        }))
+      })
+    } else {
+      paragraphs.push(new Paragraph({ alignment, children: runs(block) }))
+    }
+  }
+  return paragraphs
+}
+
 /** 导出 Word：标题 + 每页「步骤 N 说明 + 标注后截图 + 文字」 */
 export async function exportDocx(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
   const children = [
@@ -53,10 +91,7 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
     )
     if (page.notes) {
       children.push(
-        new Paragraph({
-          alignment: wordAlignment(style.notesAlign ?? 'left'),
-          children: page.notes.split(/\r?\n/).map((text, i) => new TextRun({ text, break: i ? 1 : 0, size: Math.round(style.notes * 2) })),
-        }),
+        ...wordNotes(page, style),
         new Paragraph({ children: [new TextRun('')] })
       )
     }
@@ -158,9 +193,15 @@ export async function renderDocument(
       h.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign};margin:0 0 8px;`
       block.appendChild(h)
       if (page.notes) {
-        const notes = document.createElement('p')
-        notes.textContent = page.notes
-        notes.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign};white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px;`
+        const notes = document.createElement('div')
+        notes.innerHTML = safeNotesHtml(page)
+        notes.style.cssText = `font-size:${style.notes}px;line-height:1.7;text-align:${style.notesAlign};overflow-wrap:anywhere;margin:0 0 12px;`
+        notes.querySelectorAll<HTMLElement>('p').forEach(p => { p.style.margin = '0 0 .4em' })
+        notes.querySelectorAll('ul, ol').forEach(list => {
+          const element = list as HTMLElement
+          element.style.cssText = `list-style-type:${element.tagName === 'UL' ? 'disc' : 'decimal'};padding-left:1.5em;margin:0 0 .5em;text-align:${style.notesAlign};`
+        })
+        notes.querySelectorAll<HTMLElement>('li p').forEach(p => { p.style.margin = '0' })
         block.appendChild(notes)
       }
       const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)

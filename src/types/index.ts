@@ -122,6 +122,7 @@ export interface Page {
   width: number
   height: number
   notes: string // 本页说明文字
+  notesRich?: string // 可编辑的基础富文本 HTML；notes 保留纯文本供 AI 与检查使用
   annotations: Annotation[]
   /** 首次裁剪前的原图与标注快照，用于"恢复原图" */
   orig?: { image: string; width: number; height: number; annotations: Annotation[] }

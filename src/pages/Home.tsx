@@ -65,6 +65,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { toast } from 'sonner'
 import AIPanel from '@/components/AIPanel'
 import CanvasEditor from '@/components/CanvasEditor'
+import StepNotesEditor from '@/components/StepNotesEditor'
 import ExportPreview from '@/components/ExportPreview'
 import PageList from '@/components/PageList'
 import { loadAIConfig } from '@/lib/ai'
@@ -78,6 +79,20 @@ import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect
 import { ARROW_DEFAULT_WIDTH, computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_DEFAULT_TILE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
 const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#2563eb', '#7c3aed', '#111827']
+const ANNOTATION_NAMES: Record<Annotation['kind'], string> = {
+  box: '画框',
+  ellipse: '椭圆',
+  highlight: '高亮',
+  redact: '遮挡',
+  mosaic: '打码区域',
+  number: '序号',
+  arrow: '箭头',
+  line: '直线',
+  freehand: '自由画笔',
+  text: '文字',
+  callout: '说明气泡',
+  magnifier: '局部放大',
+}
 /** 从 localStorage 读取并校验 JSON，损坏时返回 null */
 const loadJSON = <T,>(key: string, guard: (v: unknown) => v is T): T | null => {
   try {
@@ -153,7 +168,10 @@ export default function Home() {
   const [rightWidth, setRightWidth] = useState(() => loadJSON('mbz-right-width', (v): v is number => typeof v === 'number' && v >= 260 && v <= 440) ?? 288)
   useEffect(() => { localStorage.setItem('mbz-right-width', JSON.stringify(rightWidth)) }, [rightWidth])
   const [rightOpen, setRightOpen] = useState(true)
-  const [inspector, setInspector] = useState<'steps' | 'notes' | 'ai'>('steps')
+  const [inspector, setInspector] = useState<'steps' | 'ai'>('steps')
+  const [stepListHeight, setStepListHeight] = useState(() => loadJSON('mbz-step-list-height', (v): v is number => typeof v === 'number' && v >= 22 && v <= 72) ?? 42)
+  const resizingStepList = useRef(false)
+  useEffect(() => { localStorage.setItem('mbz-step-list-height', JSON.stringify(stepListHeight)) }, [stepListHeight])
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const [spaceHeld, setSpaceHeld] = useState(false)
@@ -487,6 +505,16 @@ export default function Home() {
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
   const numberStarts = computeNumberStarts(pages)
   const selectedAnn = selectedPage?.annotations.find((a) => a.id === selectedAnnId) ?? null
+  const selectedAnnName = selectedAnn?.kind === 'number'
+    ? `序号 ${(numberStarts.get(selectedPage?.id ?? '') ?? 0) + (selectedPage?.annotations.filter(a => a.kind === 'number').findIndex(a => a.id === selectedAnn.id) ?? -1) + 1}`
+    : selectedAnn?.kind === 'text' && selectedAnn.background
+      ? '文字框'
+      : selectedAnn ? ANNOTATION_NAMES[selectedAnn.kind] : ''
+  const canvasStatus = tool === 'crop'
+    ? '拖动选区或边缘手柄调整裁剪范围；在选区外拖拽可重新框选，Esc 重置选区'
+    : selectedAnn
+      ? `已选中${selectedAnnName}，可拖动位置或调整大小，Ctrl+D 复制，Delete 删除`
+      : '空格 + 拖动平移'
 
   useEffect(() => {
     const el = viewportRef.current
@@ -1326,10 +1354,10 @@ export default function Home() {
             )}
           </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-white/10 bg-[#292929] px-3 py-1 text-xs">
-            <span className="mr-auto text-muted-foreground">空格 + 拖动平移</span>
+          <div className="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-t border-white/10 bg-[#292929] px-3 text-xs">
+            <span className="min-w-0 flex-1 truncate text-muted-foreground" title={canvasStatus}>{canvasStatus}</span>
             {/* 画布缩放 */}
-            <div className="ml-auto flex items-center gap-0.5 rounded-md border bg-background p-0.5">
+            <div className="flex shrink-0 items-center gap-0.5 rounded-md border bg-background p-0.5">
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -1369,7 +1397,7 @@ export default function Home() {
                 适应画布
               </Button>
             </div>
-            <span className="text-xs text-slate-400">
+            <span className="hidden max-w-48 truncate text-xs text-slate-400 xl:inline">
               共 {pages.length} 页{selectedPage ? ` · 当前：${selectedPage.name}` : ''}
             </span><Button variant="ghost" size="sm" onClick={() => setZoomMode('width')}>适应宽度</Button>          </div>
 
@@ -1378,10 +1406,11 @@ export default function Home() {
         {rightOpen && <PanelResizeHandle label="调整检查器宽度" width={rightWidth} min={260} max={440} direction={-1} onChange={setRightWidth} />}
         <aside className={`${rightOpen ? 'flex' : 'hidden'} shrink-0 flex-col border-l border-white/10 bg-[#262626]`} style={{ width: rightWidth, maxWidth: `calc(100vw - 430px)` }} aria-label="编辑检查器">
           <div className="flex shrink-0 gap-1 border-b p-2" role="tablist" aria-label="检查器面板">
-            {([['steps', '步骤图片'], ['notes', '步骤说明'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
+            {([['steps', '步骤编辑'], ['ai', 'AI 辅助']] as const).map(([value, label]) => <Button key={value} role="tab" aria-selected={inspector === value} variant={inspector === value ? 'secondary' : 'ghost'} size="sm" onClick={() => setInspector(value)}>{label}</Button>)}
           </div>
-          <div className={`${inspector === 'steps' ? 'block' : 'hidden'} min-h-0 flex-1 overflow-hidden`}>
-<PageList
+          <div className={`${inspector === 'steps' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col overflow-hidden`}>
+            <div className="min-h-[120px] shrink-0 overflow-hidden" style={{ height: `${stepListHeight}%`, maxHeight: 'calc(100% - 210px)' }}>
+              <PageList
           pages={pages}
           selectedId={selectedPageId}
           onImportFiles={importFiles}
@@ -1401,26 +1430,43 @@ export default function Home() {
           })}
           onRemove={removePage}
           onDuplicate={(id) => { const source = pages.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }}
-        />
-          </div>
-          <div className={`${inspector === 'notes' ? 'block' : 'hidden'} min-h-0 flex-1 overflow-auto`}>
-          {/* 本页说明 */}
-          {selectedPage && (
-            <div className="border-t bg-card px-4 py-3">
-              <div className="mb-2 flex items-center justify-between text-xs font-medium text-muted-foreground">
-                步骤说明 · 第 {pages.indexOf(selectedPage) + 1} 页
-                <span className="text-[10px]">自动保存</span>
-              </div>
-              <Label htmlFor="step-name">步骤名称</Label>
-              <Input id="step-name" className="my-2" value={selectedPage.name} onChange={e => updatePage(selectedPage.id, { name: e.target.value }, true)} />
-              <Textarea
-                value={selectedPage.notes}
-                onChange={(e) => updatePage(selectedPage.id, { notes: e.target.value }, true)}
-                aria-label="步骤说明" placeholder="例如：打开活动页面后，点击「立即参与」按钮进入报名流程……"
-                className="min-h-[260px] resize-y bg-background text-sm leading-relaxed"
               />
             </div>
-          )}{!selectedPage && <p className="p-4 text-sm text-muted-foreground">添加截图后编写步骤说明。</p>}
+            <div role="separator" aria-label="调整步骤列表高度" aria-orientation="horizontal" tabIndex={0}
+              className="h-2 shrink-0 cursor-row-resize border-y border-white/10 bg-[#303030] hover:bg-[#4b80ad] focus-visible:bg-[#4b80ad] focus-visible:outline-none"
+              onPointerDown={e => { resizingStepList.current = true; e.currentTarget.setPointerCapture(e.pointerId) }}
+              onPointerMove={e => {
+                if (!resizingStepList.current) return
+                const bounds = e.currentTarget.parentElement?.getBoundingClientRect()
+                if (bounds) setStepListHeight(Math.max(22, Math.min(72, ((e.clientY - bounds.top) / bounds.height) * 100)))
+              }}
+              onPointerUp={e => { resizingStepList.current = false; e.currentTarget.releasePointerCapture(e.pointerId) }}
+              onPointerCancel={() => { resizingStepList.current = false }}
+              onKeyDown={e => {
+                if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+                e.preventDefault()
+                setStepListHeight(value => Math.max(22, Math.min(72, value + (e.key === 'ArrowDown' ? 5 : -5))))
+              }}
+            />
+            <div className="min-h-0 flex-1 overflow-y-auto bg-[#292929] px-3 py-3">
+              <div className="mb-3 flex items-center justify-between text-xs font-medium text-[#d6d6d6]">
+                <span>步骤说明{selectedPage ? ` · 第 ${pages.indexOf(selectedPage) + 1} 页` : ''}</span>
+                <span className="text-[10px] font-normal text-[#999]">自动保存</span>
+              </div>
+              {selectedPage ? (
+                <div className="space-y-3">
+                  <div>
+                    <Label htmlFor="step-name" className="mb-1.5 block text-xs text-[#bcbcbc]">步骤名称</Label>
+                    <Input id="step-name" className="h-8 border-white/15 bg-[#303030] text-sm" value={selectedPage.name} onChange={e => updatePage(selectedPage.id, { name: e.target.value }, true)} />
+                  </div>
+                  <div>
+                    <Label className="mb-1.5 block text-xs text-[#bcbcbc]">说明文字</Label>
+                    <StepNotesEditor key={selectedPage.id} notes={selectedPage.notes} notesRich={selectedPage.notesRich}
+                      onChange={(notes, notesRich) => updatePage(selectedPage.id, { notes, notesRich }, true)} />
+                  </div>
+                </div>
+              ) : <p className="text-xs text-muted-foreground">添加或选择截图后编写步骤说明。</p>}
+            </div>
           </div>
           <div className={`${inspector === 'ai' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
         <AIPanel
@@ -1431,7 +1477,7 @@ export default function Home() {
           onUpdatePage={(id, patch, expected) => {
             const current = pagesRef.current.find(p => p.id === id)
             if (!current || current !== expected) throw new Error('此步骤在生成期间已修改或切换项目，未覆盖现有内容，请重新生成。')
-            updatePage(id, patch)
+            updatePage(id, 'notes' in patch ? { ...patch, notesRich: undefined } : patch)
           }}
         />          </div>
         </aside>
