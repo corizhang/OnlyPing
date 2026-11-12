@@ -5,7 +5,6 @@ import { createContentAnnotation, hitContent, isContentAnnotation, renderContent
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
 import type { Annotation, Page, Rect, Tool } from '@/types'
 import { loadImage, mosaicCanvasRegion, renderPageToCanvas } from '@/lib/render'
 import { MOSAIC_DEFAULT_TILE, uid } from '@/types'
@@ -23,6 +22,7 @@ interface Props {
   textSize: number
   strokeWidth: number
   selectedId: string | null
+  editTextRequest?: number
   onSelect: (id: string | null) => void
   onChange: (annotations: Annotation[]) => void
   onZoomChange?: (zoom: number) => void
@@ -97,7 +97,7 @@ function resizeRect(s: Rect, handle: ResizeHandle, px: number, py: number, bound
   return { x, y, w, h }
 }
 
-export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, onSelect, onChange, onZoomChange, onCrop }: Props) {
+export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, editTextRequest, onSelect, onChange, onZoomChange, onCrop }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
   const baseImageRef = useRef<HTMLImageElement | null>(null)
@@ -109,7 +109,11 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   const dragRef = useRef<DragState | null>(null)
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
   const [textDraft, setTextDraft] = useState('')
-  const textPosRef = useRef({ x: 0, y: 0, background: false })
+  const textCommitRef = useRef(false)
+  const textCancelRef = useRef(false)
+  const suppressTextClickRef = useRef(false)
+  const lastEditRequestRef = useRef(editTextRequest)
+  const [textPos, setTextPos] = useState({ x: 0, y: 0, background: false })
   const [cropRect, setCropRect] = useState<Rect | null>(null)
 
   // Ctrl + 滚轮缩放
@@ -244,24 +248,43 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   )
 
   const commitText = useCallback(() => {
+    if (!editingTextId || textCommitRef.current || textCancelRef.current) return
+    textCommitRef.current = true
     const text = textDraft.trim()
     const editing = page.annotations.find((a) => a.id === editingTextId)
     if (editing && (editing.kind === 'text' || editing.kind === 'callout')) {
       if (text) updateAnnotation(editing.id, { text })
       else onChange(page.annotations.filter((a) => a.id !== editing.id))
     } else if (text) {
-      const ann = createContentAnnotation('text', uid(), textPosRef.current.x, textPosRef.current.y, {
-        text, color, textSize, background: textPosRef.current.background,
+      const ann = createContentAnnotation('text', uid(), textPos.x, textPos.y, {
+        text, color, textSize, background: textPos.background,
       })
       onChange([...page.annotations, ann])
       onSelect(ann.id)
     }
     setEditingTextId(null)
     setTextDraft('')
-  }, [textDraft, editingTextId, page.annotations, color, textSize, onChange, onSelect, updateAnnotation])
+  }, [textDraft, editingTextId, textPos, page.annotations, color, textSize, onChange, onSelect, updateAnnotation])
+
+  const beginTextEdit = useCallback((id: string, text: string) => {
+    textCommitRef.current = false
+    textCancelRef.current = false
+    setTextDraft(text)
+    setEditingTextId(id)
+  }, [])
+
+  useEffect(() => {
+    if (editTextRequest === lastEditRequestRef.current) return
+    lastEditRequestRef.current = editTextRequest
+    const ann = page.annotations.find(a => a.id === selectedId)
+    if (ann?.kind === 'text' || ann?.kind === 'callout') beginTextEdit(ann.id, ann.text)
+  }, [editTextRequest, selectedId, page.annotations, beginTextEdit])
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (editingTextId) return
+    if (editingTextId) {
+      suppressTextClickRef.current = true
+      return
+    }
     ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
     const { x, y } = toNatural(e)
 
@@ -388,6 +411,9 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       if (ann && (ann.kind === 'box' || ann.kind === 'ellipse' || ann.kind === 'highlight' || ann.kind === 'redact' || ann.kind === 'mosaic' || ann.kind === 'callout' || ann.kind === 'magnifier') && (ann.w < 8 || ann.h < 8)) {
         onChange(page.annotations.filter((a) => a.id !== drag.id))
         onSelect(null)
+      } else if (ann?.kind === 'callout') {
+        // pointerup 后再聚焦，避免创建手势末尾的 click 立即让输入区失焦。
+        requestAnimationFrame(() => beginTextEdit(ann.id, ''))
       }
     }
     if (drag?.mode === 'arrow-end') {
@@ -497,11 +523,15 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onClick={(e) => {
+            if (suppressTextClickRef.current) {
+              suppressTextClickRef.current = false
+              return
+            }
             if ((tool !== 'text' && tool !== 'text-box') || editingTextId) return
             const { x, y } = toNatural(e)
-            textPosRef.current = { x, y, background: tool === 'text-box' }
-            setTextDraft('')
-            setEditingTextId('__new__')
+            // 文字标注内部保存首行基线；点击位置应对应文字框的左上角。
+            setTextPos({ x, y: y + textSize, background: tool === 'text-box' })
+            beginTextEdit('__new__', '')
           }}
           onDoubleClick={(e) => {
             if (tool !== 'select') return
@@ -509,8 +539,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
             const hit = hitTest(x, y)
             if (hit?.kind === 'text' || hit?.kind === 'callout') {
               onSelect(hit.id)
-              setTextDraft(hit.text)
-              setEditingTextId(hit.id)
+              beginTextEdit(hit.id, hit.text)
             }
           }}
         >
@@ -555,7 +584,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
             if (isContentAnnotation(ann)) {
               return (
                 <g key={ann.id}>
-                  {renderContentAnnotation(ann, {
+                  {(editingTextId !== ann.id || ann.kind === 'callout') && renderContentAnnotation(editingTextId === ann.id && ann.kind === 'callout' ? { ...ann, text: '' } : ann, {
                     selected: isSel,
                     scale,
                     magnifierSource,
@@ -623,29 +652,64 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
           </div>
         )}
 
-        {/* 文字标注内联编辑器（多行，Enter 换行） */}
+        {/* 输入区覆盖在标注自身，不再出现独立的悬浮编辑框。 */}
         {editingTextId && (
-          <Textarea
+          <textarea
             autoFocus
             value={textDraft}
             onChange={(e) => setTextDraft(e.target.value)}
             onBlur={commitText}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) commitText()
+              e.stopPropagation()
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault()
+                commitText()
+              }
               if (e.key === 'Escape') {
+                e.preventDefault()
+                textCancelRef.current = true
                 setEditingTextId(null)
                 setTextDraft('')
               }
             }}
-            placeholder="输入说明文字，可 Enter 换行，Ctrl+回车或点击空白处确认"
-            rows={Math.min(6, Math.max(2, textDraft.split('\n').length + 1))}
-            className="absolute z-10 min-h-0 resize-none border-2 border-primary bg-background/95 px-2 py-1 text-sm leading-snug text-foreground shadow-lg outline-none focus-visible:ring-0"
-            style={{
-              left: (editingTextId === '__new__' ? textPosRef.current.x : (selected?.kind === 'text' ? selected.x : selected?.kind === 'callout' ? selected.x + 6 : 0)) * scale,
-              top: (editingTextId === '__new__' ? textPosRef.current.y : (selected?.kind === 'text' ? selected.y : selected?.kind === 'callout' ? selected.y + 6 : 0)) * scale,
-              width: selected?.kind === 'callout' ? Math.max(120, (selected.w - 12) * scale) : 260,
-              fontSize: 14,
-            }}
+            placeholder={selected?.kind === 'callout' ? '输入说明文字' : '输入文字'}
+            aria-label="标注文字编辑区"
+            className="absolute z-10 resize-none outline-none placeholder:opacity-60"
+            style={selected?.kind === 'callout' ? {
+              left: (selected.x + 10) * scale,
+              top: (selected.y + 10) * scale,
+              width: Math.max(1, selected.w - 20) * scale,
+              height: Math.max(1, selected.h - 20) * scale,
+              padding: 0,
+              border: 0,
+              background: 'transparent',
+              color: selected.color,
+              font: `${600} ${16 * scale}px "PingFang SC", "Microsoft YaHei", sans-serif`,
+              lineHeight: 1.25,
+              textAlign: 'center',
+              boxSizing: 'border-box',
+            } : (() => {
+              const size = selected?.kind === 'text' ? selected.size ?? 26 : textSize
+              const x = selected?.kind === 'text' ? selected.x : textPos.x
+              const y = selected?.kind === 'text' ? selected.y : textPos.y
+              const background = selected?.kind === 'text' ? selected.background : textPos.background
+              const longest = Math.max(1, ...textDraft.split('\n').map(line => Array.from(line).length))
+              return {
+                left: (x - (background ? 6 : 0)) * scale,
+                top: (y - size - (background ? 4 : 0)) * scale,
+                width: Math.min(page.width - x + 6, Math.max(110, longest * size * 0.7 + 24)) * scale,
+                minHeight: (Math.max(1, textDraft.split('\n').length) * Math.round(size * 1.3) + (background ? 10 : 4)) * scale,
+                padding: background ? `${4 * scale}px ${6 * scale}px` : `0 ${2 * scale}px`,
+                border: background ? `${Math.max(1, scale)}px solid #d1d5db` : 0,
+                background: background ? '#fff' : 'transparent',
+                color: selected?.kind === 'text' ? selected.color : color,
+                font: `${700} ${size * scale}px "PingFang SC", "Microsoft YaHei", sans-serif`,
+                lineHeight: 1.3,
+                boxSizing: 'border-box' as const,
+                textShadow: background ? 'none' : `${scale}px ${scale}px #fff, -${scale}px -${scale}px #fff`,
+                outline: background ? 'none' : `1px dashed #3b82f6`,
+              }
+            })()}
           />
         )}
       </div>

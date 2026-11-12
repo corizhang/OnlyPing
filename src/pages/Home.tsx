@@ -51,7 +51,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -161,6 +160,7 @@ export default function Home() {
   const color = annStyle.color
   const setColor = (c: string) => setAnnStyle((s) => ({ ...s, color: c }))
   const [selectedAnnId, setSelectedAnnId] = useState<string | null>(null)
+  const [editTextRequest, setEditTextRequest] = useState(0)
   const [aiConfig, setAIConfig] = useState(loadAIConfig())
   const [exporting, setExporting] = useState(false)
   const [zoom, setZoom] = useState(1)
@@ -1235,18 +1235,9 @@ export default function Home() {
 
 
             {selectedAnn && (selectedAnn.kind === 'text' || selectedAnn.kind === 'callout') && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" className="size-8 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="编辑标注文字" title="编辑标注文字">
-                    <Type className="size-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-64 border-white/10 bg-slate-950 text-slate-100" align="center">
-                  <label className="space-y-2 text-xs text-slate-300">文字内容
-                    <Textarea aria-label="标注文字内容" className="mt-2 min-h-20 resize-y border-white/15 bg-white/10 text-slate-100" value={selectedAnn.text} onChange={e => updateAnnSize({ text: e.target.value })} />
-                  </label>
-                </PopoverContent>
-              </Popover>
+              <Button variant="ghost" size="icon-sm" className="size-8 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="编辑标注文字" title="在标注内编辑文字" onClick={() => setEditTextRequest(v => v + 1)}>
+                <Type className="size-4" />
+              </Button>
             )}
             {selectedAnn && selectedPage && <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 pl-2">
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="复制标注" title="复制标注" onClick={() => { const shifted = 'points' in selectedAnn ? { ...selectedAnn, points: selectedAnn.points.map(p => ({ x: p.x + 12, y: p.y + 12 })) } : 'x1' in selectedAnn ? { ...selectedAnn, x1: selectedAnn.x1 + 12, y1: selectedAnn.y1 + 12, x2: selectedAnn.x2 + 12, y2: selectedAnn.y2 + 12 } : { ...selectedAnn, x: selectedAnn.x + 12, y: selectedAnn.y + 12 }; const copy = { ...shifted, id: uid() }; updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" /></Button>
@@ -1339,6 +1330,7 @@ export default function Home() {
                 textSize={annStyle.textSize}
                 strokeWidth={annStyle.strokeWidth}
                 selectedId={selectedAnnId}
+                editTextRequest={editTextRequest}
                 onSelect={setSelectedAnnId}
                 onChange={(annotations) => updatePage(selectedPage.id, { annotations })}
                 onZoomChange={manualZoom}

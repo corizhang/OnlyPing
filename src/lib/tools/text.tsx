@@ -1,5 +1,24 @@
 import type { ContentTool } from './types'
 
+const measureContext = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')
+
+function textBounds(a: { x: number; y: number; text: string; size?: number; background?: boolean }) {
+  const size = a.size ?? 26
+  const lineHeight = Math.round(size * 1.3)
+  const lines = a.text.split('\n')
+  if (measureContext) measureContext.font = `bold ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
+  const textWidth = Math.max(size * 0.6, ...lines.map(line => measureContext
+    ? measureContext.measureText(line).width
+    : Array.from(line).length * size))
+  return {
+    size, lineHeight, lines, textWidth,
+    x: a.x - (a.background ? 8 : 4),
+    y: a.y - size - 6,
+    w: textWidth + (a.background ? 16 : 12),
+    h: lines.length * lineHeight + (a.background ? 14 : 12),
+  }
+}
+
 export const textTool: ContentTool<'text'> = {
   kind: 'text',
   create: (id, x, y, style) => ({
@@ -13,13 +32,8 @@ export const textTool: ContentTool<'text'> = {
     background: style.background ?? false,
   }),
   hit: (a, x, y) => {
-    const size = a.size ?? 26
-    const lineHeight = Math.round(size * 1.3)
-    const lines = a.text.split('\n')
-    const maxLength = Math.max(...lines.map((line) => line.length), 1)
-    const padX = a.background ? 12 : 4
-    const top = a.background ? a.y - size - 6 : a.y - 6
-    return x >= a.x - padX && x <= a.x + maxLength * size + padX && y >= top && y <= a.y + lines.length * lineHeight + 16
+    const bounds = textBounds(a)
+    return x >= bounds.x && x <= bounds.x + bounds.w && y >= bounds.y && y <= bounds.y + bounds.h
   },
   draw: (ctx, a) => {
     const size = a.size ?? 26
@@ -27,7 +41,7 @@ export const textTool: ContentTool<'text'> = {
     const lineHeight = Math.round(size * 1.3)
     ctx.save()
     ctx.font = `bold ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
-    ctx.textBaseline = 'top'
+    ctx.textBaseline = 'alphabetic'
     ctx.lineJoin = 'round'
     const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width), size * 0.6)
     if (a.background) {
@@ -50,24 +64,19 @@ export const textTool: ContentTool<'text'> = {
     ctx.restore()
   },
   view: (a, { selected }) => {
-    const size = a.size ?? 26
-    const lines = a.text.split('\n')
-    const lineHeight = Math.round(size * 1.3)
-    const maxLength = Math.max(...lines.map((line) => line.length), 1)
-    const textWidth = maxLength * size * 0.65
-    const textHeight = lines.length * lineHeight
+    const { size, lines, lineHeight, textWidth, x, y, w, h } = textBounds(a)
     return (
       <>
-        {a.background && <rect x={a.x - 6} y={a.y - size - 4} width={textWidth + 12} height={textHeight + 10} rx={4} fill="#ffffff" stroke="#d1d5db" strokeWidth={1} />}
+        {a.background && <rect x={a.x - 6} y={a.y - size - 4} width={textWidth + 12} height={lines.length * lineHeight + 10} rx={4} fill="#ffffff" stroke="#d1d5db" strokeWidth={1} />}
         <text x={a.x} y={a.y} fontSize={size} fontWeight={700} fill={a.color} stroke="rgba(255,255,255,0.95)" strokeWidth={Math.max(4, size / 4)} paintOrder="stroke" fontFamily='"PingFang SC", "Microsoft YaHei", sans-serif'>
           {lines.map((line, index) => <tspan key={index} x={a.x} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>)}
         </text>
         {selected && (
           <rect
-            x={a.x - (a.background ? 8 : 4)}
-            y={a.y - (a.background ? size + 6 : 6)}
-            width={textWidth + (a.background ? 16 : 12)}
-            height={textHeight + (a.background ? 14 : 16)}
+            x={x}
+            y={y}
+            width={w}
+            height={h}
             fill="none"
             stroke="#2563eb"
             strokeWidth={2}

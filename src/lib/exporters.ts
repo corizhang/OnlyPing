@@ -4,7 +4,7 @@ import { jsPDF } from 'jspdf'
 import type { ExportFooter, ExportStyle, Page } from '@/types'
 import { computeNumberStarts, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE } from '@/types'
 import { dataUrlToBase64, renderPageToCanvas } from './render'
-import { safeNotesHtml } from './notes'
+import { notesColor, notesFontSize, notesLineHeight, safeNotesHtml } from './notes'
 
 function download(blob: Blob, filename: string) {
   const a = document.createElement('a')
@@ -36,34 +36,52 @@ const wordAlignment = (alignment: ExportStyle['titleAlign']) => ({
 function wordNotes(page: Page, style: ExportStyle): Paragraph[] {
   const container = document.createElement('div')
   container.innerHTML = safeNotesHtml(page)
-  const size = Math.round(style.notes * 2)
-  const runs = (node: Node, marks = { bold: false, italics: false, strike: false }): TextRun[] => {
+  type Marks = { bold: boolean; italics: boolean; underline: boolean; strike: boolean; color?: string; background?: string; size?: number }
+  const defaultMarks: Marks = { bold: false, italics: false, underline: false, strike: false }
+  const makeRun = (text: string, marks: Marks, lineBreak = false) => new TextRun({
+    text, break: lineBreak ? 1 : undefined,
+    size: Math.round((marks.size ?? style.notes) * 2),
+    bold: marks.bold, italics: marks.italics, strike: marks.strike,
+    underline: marks.underline ? {} : undefined,
+    color: marks.color?.slice(1),
+    shading: marks.background ? { fill: marks.background.slice(1) } : undefined,
+  })
+  const runs = (node: Node, marks: Marks = defaultMarks): TextRun[] => {
     if (node.nodeType === Node.TEXT_NODE) {
-      return node.textContent ? [new TextRun({ text: node.textContent, size, ...marks })] : []
+      return node.textContent ? [makeRun(node.textContent, marks)] : []
     }
     if (!(node instanceof HTMLElement)) return []
-    if (node.tagName === 'BR') return [new TextRun({ text: '', break: 1, size })]
-    const next = {
+    if (node.tagName === 'BR') return [makeRun('', marks, true)]
+    const next: Marks = {
       bold: marks.bold || node.tagName === 'STRONG',
       italics: marks.italics || node.tagName === 'EM',
+      underline: marks.underline || node.tagName === 'U',
       strike: marks.strike || node.tagName === 'S',
+      color: notesColor(node.style.color)?.toUpperCase() ?? marks.color,
+      background: notesColor(node.style.backgroundColor)?.toUpperCase() ?? marks.background,
+      size: notesFontSize(node.style.fontSize) ?? marks.size,
     }
     return Array.from(node.childNodes).flatMap(child => runs(child, next))
   }
-  const alignment = wordAlignment(style.notesAlign ?? 'left')
+  const paragraphOptions = (block: HTMLElement) => ({
+    alignment: wordAlignment((['left', 'center', 'right'].includes(block.style.textAlign)
+      ? block.style.textAlign : style.notesAlign ?? 'left') as ExportStyle['notesAlign']),
+    spacing: { line: Math.round(240 * (notesLineHeight(block.style.lineHeight) ?? 1.7)) },
+  })
   const paragraphs: Paragraph[] = []
   for (const block of Array.from(container.childNodes)) {
     if (!(block instanceof HTMLElement)) continue
     if (block.tagName === 'UL' || block.tagName === 'OL') {
       Array.from(block.children).forEach((item, index) => {
+        const paragraph = item.querySelector('p') ?? item as HTMLElement
         paragraphs.push(new Paragraph({
-          alignment,
+          ...paragraphOptions(paragraph),
           indent: { left: 320 },
-          children: [new TextRun({ text: block.tagName === 'UL' ? '•  ' : `${index + 1}.  `, size }), ...runs(item)],
+          children: [makeRun(block.tagName === 'UL' ? '•  ' : `${index + 1}.  `, defaultMarks), ...runs(item)],
         }))
       })
     } else {
-      paragraphs.push(new Paragraph({ alignment, children: runs(block) }))
+      paragraphs.push(new Paragraph({ ...paragraphOptions(block), children: runs(block) }))
     }
   }
   return paragraphs
