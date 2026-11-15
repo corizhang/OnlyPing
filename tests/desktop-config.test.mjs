@@ -20,6 +20,9 @@ test('desktop filesystem commands are limited to the local main window with no g
   assert.ok(!capability.remote)
   assert.ok(capability.permissions.includes('allow-read-ai-key'))
   assert.ok(capability.permissions.includes('allow-write-ai-key'))
+  for (const command of ['ready', 'migrate', 'save', 'read', 'delete', 'missing-assets', 'list']) {
+    assert.ok(capability.permissions.includes(`allow-project-storage-${command}`))
+  }
   assert.deepEqual(capability.permissions.filter(p => typeof p === 'string' && p.startsWith('fs:')).sort(), ['fs:allow-read-file', 'fs:allow-write-file'])
   assert.ok(!capability.permissions.some(p => typeof p === 'object' && (p.allow || p.identifier?.startsWith('fs:'))), 'user-picked paths, not a blanket filesystem scope')
 })

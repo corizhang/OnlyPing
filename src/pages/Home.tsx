@@ -62,6 +62,7 @@ import StepNotesEditor from '@/components/StepNotesEditor'
 import ExportPreview from '@/components/ExportPreview'
 import PageList from '@/components/PageList'
 import { loadAIConfig, restoreAIConfig } from '@/lib/ai-config'
+import { readRecoverableProject } from '@/lib/project-recovery'
 import { rectCoverage, runConsistencyChecks, type CheckIssue } from '@/lib/check'
 import { idbGet, idbSet, validateAutosave, listLocalProjects, readLocalProject, ProjectConflictError, type LocalProjectEntry, type ProjectData } from '@/lib/db'
 import { useProjectAutosave } from '@/hooks/use-project-autosave'
@@ -290,13 +291,12 @@ export default function Home() {
   const undo = () => { const value = history.current.undo(snapshot()); if (value) applySnapshot(value) }
   const redo = () => { const value = history.current.redo(snapshot()); if (value) applySnapshot(value) }
 
-  // 启动时从 IndexedDB 恢复自动存档（含结构校验）；兼容迁移旧的 localStorage 存档
+  // 从当前平台存储恢复；结构损坏和读取异常均尝试独立恢复副本。
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const data = await idbGet<unknown>()
-        const restored = validateAutosave(data) ?? validateAutosave(await idbGet<unknown>('backup'))
+        const restored = await readRecoverableProject(key => idbGet<unknown>(key), validateAutosave)
         if (cancelled) return
         if (restored) {
           setProjectId(restored.projectId ?? crypto.randomUUID())
@@ -313,7 +313,6 @@ export default function Home() {
           setStorageReady(true)
           return
         }
-        if (data != null) throw new Error('自动存档及恢复副本均无法读取，已暂停自动保存，请打开项目备份。')
         // 迁移旧的 localStorage 存档
         const raw = localStorage.getItem('mbz-autosave')
         if (raw) {
@@ -328,7 +327,7 @@ export default function Home() {
           } else {
             setSaveNote('检测到旧版存档但数据损坏，未能恢复')
           }
-          // 旧存档保留，直到 IndexedDB 成功写入后再清理。
+          // 旧存档保留，直到当前平台存储成功写入后再清理。
         }
         setStorageReady(true)
       } catch {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { LocalProjectEntry } from '@/lib/db'
+import { isDesktop } from '@/lib/files'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
@@ -12,7 +13,7 @@ export default function ProjectLibrary({ open, onOpenChange, entries, activeKey,
   const [error, setError] = useState('')
   const [capacity, setCapacity] = useState('')
   useEffect(() => {
-    if (!open) return
+    if (!open || isDesktop()) return
     let active = true
     navigator.storage?.estimate?.().then(({ usage, quota }) => {
       if (active && usage !== undefined && quota) setCapacity(`此网站约占用 ${(usage / 1048576).toFixed(1)} MB / 浏览器配额 ${(quota / 1048576).toFixed(0)} MB`)
@@ -22,8 +23,8 @@ export default function ProjectLibrary({ open, onOpenChange, entries, activeKey,
   return <Dialog open={open} onOpenChange={value => { if (!busy) { setTarget(null); setError(''); onOpenChange(value) } }}>
     <DialogContent className="max-h-[80vh] overflow-auto">
       <DialogHeader><DialogTitle>本地项目与历史版本</DialogTitle><DialogDescription>每个项目保留最近 3 个不同版本。删除会同时移除历史版本及不再使用的图片，无法撤销；请先下载备份。当前项目需切换到其他项目后才能删除。</DialogDescription></DialogHeader>
-      {capacity && <p className="text-xs text-muted-foreground">{capacity}（估算值，非可用磁盘空间）</p>}
-      <Button variant="outline" onClick={onBackup}>下载当前项目备份</Button>
+      {isDesktop() ? <p className="text-xs text-muted-foreground">项目保存在此电脑的应用数据目录中，请定期保存项目备份。</p> : capacity && <p className="text-xs text-muted-foreground">{capacity}（估算值，非可用磁盘空间）</p>}
+      <Button variant="outline" onClick={onBackup}>保存当前项目备份</Button>
       {target && <div role="alert" className="space-y-3 rounded border border-destructive p-3">
         <p className="text-sm">确认永久删除“{target.title}”及其全部历史版本？</p>
         <div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => setTarget(null)}>取消删除</Button><Button variant="destructive" disabled={busy} onClick={async () => {

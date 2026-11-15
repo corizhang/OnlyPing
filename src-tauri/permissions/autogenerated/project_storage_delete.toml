@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-storage-delete"
+description = "Enables the project_storage_delete command without any pre-configured scope."
+commands.allow = ["project_storage_delete"]
+
+[[permission]]
+identifier = "deny-project-storage-delete"
+description = "Denies the project_storage_delete command without any pre-configured scope."
+commands.deny = ["project_storage_delete"]

@@ -3,7 +3,14 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             credentials::read_ai_key,
-            credentials::write_ai_key
+            credentials::write_ai_key,
+            project_storage::project_storage_ready,
+            project_storage::project_storage_migrate,
+            project_storage::project_storage_save,
+            project_storage::project_storage_read,
+            project_storage::project_storage_delete,
+            project_storage::project_storage_missing_assets,
+            project_storage::project_storage_list
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -21,3 +28,4 @@ pub fn run() {
         .expect("error while building tauri application");
 }
 mod credentials;
+mod project_storage;

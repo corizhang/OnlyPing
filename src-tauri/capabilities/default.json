@@ -8,6 +8,13 @@
   "permissions": [
     "allow-read-ai-key",
     "allow-write-ai-key",
+    "allow-project-storage-ready",
+    "allow-project-storage-migrate",
+    "allow-project-storage-save",
+    "allow-project-storage-read",
+    "allow-project-storage-delete",
+    "allow-project-storage-missing-assets",
+    "allow-project-storage-list",
     "core:default",
     "core:window:allow-destroy",
     "dialog:allow-open",

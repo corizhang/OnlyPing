@@ -8,11 +8,27 @@ registerHooks({ resolve(specifier, context, next) {
   if (specifier === '@/types') return { url: new URL('../src/types/index.ts', import.meta.url).href, shortCircuit: true }
   return next(specifier, context)
 } })
-const { idbGet, idbSet, listLocalProjects, readLocalProject, deleteLocalProject } = await import('../src/lib/db.ts')
+const { idbGet, idbSet, listLocalProjects, readLocalProject, deleteLocalProject, readIndexedDBSnapshot } = await import('../src/lib/db.ts')
 const image = 'data:image/png;base64,aGVsbG8='
 const project = (projectId, title, savedAt = 1) => ({ schemaVersion: 1, projectId, title, savedAt,
   pages: [{ id: 'page', name: '截图', notes: '', image, width: 100, height: 100, annotations: [] }] })
 const open = () => new Promise((resolve, reject) => { const req = indexedDB.open('mingbai-tool', 2); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error) })
+
+test('migration snapshot preserves source aliases, history, tombstones and assets without writes', async () => {
+  const value = project('migration-source', '迁移原始')
+  await idbSet(value)
+  await idbSet({ ...value, title: '迁移第二版' })
+  const before = await idbGet()
+  const snapshot = await readIndexedDBSnapshot()
+  const records = new Map(snapshot.records)
+  assert.ok(records.has('project:migration-source'))
+  assert.ok(records.has('history:project:migration-source'))
+  const key = records.get('autosave').pages[0].image
+  assert.equal(new Map(snapshot.assets).get(key), image)
+  assert.deepEqual(await idbGet(), before)
+  await deleteLocalProject('project:migration-source')
+  assert.equal(new Map((await readIndexedDBSnapshot()).records).get('deleted:project:migration-source'), true)
+})
 
 test('metadata edits reuse stored images and recreate missing assets without trusting a stale cache', async () => {
   const data = project('asset-reuse', '原始名称')

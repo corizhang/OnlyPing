@@ -1,7 +1,40 @@
 import { z } from 'zod'
 import { DEFAULT_EXPORT_STYLE, DEFAULT_EXPORT_FOOTER } from '@/types'
 import { ImageAssetCache } from './image-asset-cache.ts'
-/** 基于 IndexedDB 的本地存档：配额为磁盘级，可容纳含大量截图的项目 */
+import { isDesktop } from './files.ts'
+import type { LegacySnapshot } from './desktop-project-store.ts'
+/** Web uses IndexedDB; desktop uses the transactional native store. */
+
+let desktop: Promise<ReturnType<typeof import('./desktop-project-store.ts').createDesktopProjectStore>> | undefined
+function nativeStore() {
+  return desktop ??= import('./desktop-project-store.ts').then(({ createDesktopProjectStore }) =>
+    createDesktopProjectStore(async (command, args) => {
+      try { return await (await import('@tauri-apps/api/core')).invoke(command, args) }
+      catch (error) {
+        if ((error as { code?: string })?.code === 'conflict') throw new ProjectConflictError()
+        throw new Error((error as { message?: string })?.message ?? '桌面存储不可用，请保留当前项目并下载备份')
+      }
+    }, readIndexedDBSnapshot, validateAutosave))
+    .catch(error => { desktop = undefined; throw error })
+}
+
+/** One readonly transaction preserves aliases, history, tombstones and image references. */
+export async function readIndexedDBSnapshot(): Promise<LegacySnapshot> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE, 'images'], 'readonly')
+    const records: LegacySnapshot['records'] = [], assets: LegacySnapshot['assets'] = []
+    for (const [name, destination] of [[STORE, records], ['images', assets]] as const) {
+      const cursor = tx.objectStore(name).openCursor()
+      cursor.onsuccess = () => {
+        const row = cursor.result
+        if (row) { destination.push([String(row.key), row.value]); row.continue() }
+      }
+    }
+    tx.oncomplete = () => { db.close(); resolve({ records, assets }) }
+    tx.onabort = () => { db.close(); reject(tx.error ?? new Error('旧存档读取失败，未迁移')) }
+  })
+}
 
 const DB_NAME = 'mingbai-tool'
 const STORE = 'projects'
@@ -52,6 +85,7 @@ function pruneUnusedImages(tx: IDBTransaction) {
 
 /** Deletion shares the save queue and transaction so history/assets cannot race. */
 export function deleteLocalProject(key: string): Promise<void> {
+  if (isDesktop()) return nativeStore().then(store => store.remove(key))
   if (!key.startsWith('project:') || key.length <= 8) return Promise.reject(new Error('无效项目'))
   const task = writeQueue.catch(() => undefined).then(async () => {
     const db = await openDB()
@@ -94,6 +128,7 @@ async function packImages(value: ProjectData, owners: ProjectData['pages']) {
 }
 
 export function idbSet(value: unknown): Promise<void> {
+  if (isDesktop()) return nativeStore().then(store => store.save(value))
   const valid = validateAutosave(value)
   if (!valid) return Promise.reject(new Error('项目包含无效数据，未覆盖存档'))
   // Capture identities separately: validation clones records, while immutable
@@ -161,6 +196,7 @@ async function writeProject(value: ProjectData, owners: ProjectData['pages']): P
 }
 
 export async function idbGet<T>(key = KEY): Promise<T | null> {
+  if (isDesktop()) return (await nativeStore()).read<T>(key)
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE, 'images'], 'readonly')
@@ -191,6 +227,7 @@ export async function idbGet<T>(key = KEY): Promise<T | null> {
 export interface LocalProjectEntry { key: string; title: string; savedAt: number; pages: number; revision?: number }
 
 export async function listLocalProjects(): Promise<LocalProjectEntry[]> {
+  if (isDesktop()) return (await nativeStore()).list()
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readonly')
@@ -210,6 +247,10 @@ export async function listLocalProjects(): Promise<LocalProjectEntry[]> {
 }
 
 export async function readLocalProject(entry: LocalProjectEntry) {
+  if (isDesktop()) {
+    const value = await (await nativeStore()).read<unknown>(entry.key)
+    return validateAutosave(entry.revision === undefined ? value : (value as unknown[])?.[entry.revision])
+  }
   if (entry.revision === undefined) return validateAutosave(await idbGet(entry.key))
   // 历史条目临时读出后，复用资源解引用读取路径。
   const versions = await idbGet<unknown[]>(entry.key)
