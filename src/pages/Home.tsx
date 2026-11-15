@@ -1,3 +1,7 @@
+import AnnotationParameters from '@/components/AnnotationParameters'
+import { cropAnnotation, duplicateAnnotation } from '@/lib/tools/annotation-geometry'
+import { TOOL_DEFINITIONS, TOOL_CATALOG, TOOL_PARAMETERS, annotationLabel } from '@/lib/tools/catalog'
+import ToolIcon from '@/components/ToolIcon'
 import { TOOL_SHORTCUTS, DEFAULT_TOOL_ORDER } from '@/lib/tools'
 import { EditHistory } from '@/lib/history'
 import PanelResizeHandle from '@/components/PanelResizeHandle'
@@ -7,32 +11,18 @@ import {
   Keyboard,
   Copy,
   FilePlus2,
-  Box,
-  Circle,
-  Highlighter,
-  EyeOff,
-  TextCursorInput,
-  Minus,
-  Pencil,
-  MessageSquareQuote,
-  Search,
   Download,
   Eye,
   FileDown,
   Image as ImageIcon,
-  MousePointer2,
-  ShieldCheck,
   Type,
-  Hash,
   ZoomIn,
   ZoomOut,
-  Crop,
   RotateCcw,
   Undo2,
   Redo2,
   Palette,
   Trash2,
-  ArrowUpRight,
   ListChecks,
   ShieldAlert,
   CircleAlert,
@@ -76,23 +66,10 @@ import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
-import { ARROW_DEFAULT_WIDTH, computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_DEFAULT_TILE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
+import { computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
 const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#2563eb', '#7c3aed', '#111827']
-const ANNOTATION_NAMES: Record<Annotation['kind'], string> = {
-  box: '画框',
-  ellipse: '椭圆',
-  highlight: '高亮',
-  redact: '遮挡',
-  mosaic: '打码区域',
-  number: '序号',
-  arrow: '箭头',
-  line: '直线',
-  freehand: '自由画笔',
-  text: '文字',
-  callout: '说明气泡',
-  magnifier: '局部放大',
-}
+
 /** 从 localStorage 读取并校验 JSON，损坏时返回 null */
 const loadJSON = <T,>(key: string, guard: (v: unknown) => v is T): T | null => {
   try {
@@ -519,7 +496,7 @@ export default function Home() {
     ? `序号 ${(numberStarts.get(selectedPage?.id ?? '') ?? 0) + (selectedPage?.annotations.filter(a => a.kind === 'number').findIndex(a => a.id === selectedAnn.id) ?? -1) + 1}`
     : selectedAnn?.kind === 'text' && selectedAnn.background
       ? '文字框'
-      : selectedAnn ? ANNOTATION_NAMES[selectedAnn.kind] : ''
+      : selectedAnn ? annotationLabel(selectedAnn) : ''
   const canvasStatus = tool === 'crop'
     ? '拖动选区或边缘手柄调整裁剪范围；在选区外拖拽可重新框选，Esc 重置选区'
     : selectedAnn
@@ -594,33 +571,6 @@ export default function Home() {
   }
 
   // 裁剪：图片裁为选区，标注坐标平移/裁剪，首次裁剪保留原图快照
-  const shiftForCrop = (a: Annotation, r: Rect): Annotation | null => {
-    if (a.kind === 'number' || a.kind === 'text') {
-      const nx = a.x - r.x
-      const ny = a.y - r.y
-      if (nx < -40 || ny < -40 || nx > r.w + 40 || ny > r.h + 40) return null
-      return { ...a, x: nx, y: ny }
-    }
-    if (a.kind === 'arrow' || a.kind === 'line') {
-      const inside = (px: number, py: number) =>
-        px >= r.x - 40 && py >= r.y - 40 && px <= r.x + r.w + 40 && py <= r.y + r.h + 40
-      if (!inside(a.x1, a.y1) && !inside(a.x2, a.y2)) return null
-      return { ...a, x1: a.x1 - r.x, y1: a.y1 - r.y, x2: a.x2 - r.x, y2: a.y2 - r.y }
-    }
-    if (a.kind === 'freehand') {
-      const xs = a.points.map((p) => p.x)
-      const ys = a.points.map((p) => p.y)
-      if (Math.max(...xs) < r.x || Math.min(...xs) > r.x + r.w || Math.max(...ys) < r.y || Math.min(...ys) > r.y + r.h) return null
-      return { ...a, points: a.points.map((p) => ({ x: p.x - r.x, y: p.y - r.y })) }
-    }
-    const x1 = Math.max(a.x, r.x)
-    const y1 = Math.max(a.y, r.y)
-    const x2 = Math.min(a.x + a.w, r.x + r.w)
-    const y2 = Math.min(a.y + a.h, r.y + r.h)
-    if (x2 - x1 < 8 || y2 - y1 < 8) return null
-    return { ...a, x: x1 - r.x, y: y1 - r.y, w: x2 - x1, h: y2 - y1 }
-  }
-
   const applyCrop = async (page: Page, rect: Rect) => {
     const img = await loadImage(page.image)
     const w = Math.round(rect.w)
@@ -634,7 +584,7 @@ export default function Home() {
       width: w,
       height: h,
       annotations: page.annotations
-        .map((a) => shiftForCrop(a, rect))
+        .map((a) => cropAnnotation(a, rect))
         .filter((a): a is Annotation => !!a),
       orig: page.orig ?? {
         image: page.image,
@@ -784,23 +734,7 @@ export default function Home() {
     if (from === to) return
     setToolOrder(current => { const next = current.filter(v => v !== from); next.splice(next.indexOf(to) + (after ? 1 : 0), 0, from); return next })
   }
-  const TOOLS: { value: Tool; icon: React.ReactNode; label: string; shortcut: string }[] = [
-    { value: 'select', icon: <MousePointer2 className="h-4 w-4" />, label: '选择/移动', shortcut: 'V' },
-    { value: 'box', icon: <Box className="h-4 w-4" />, label: '画框', shortcut: 'B' },
-    { value: 'ellipse', icon: <Circle className="h-4 w-4" />, label: '椭圆', shortcut: 'E' },
-    { value: 'highlight', icon: <Highlighter className="h-4 w-4" />, label: '高亮', shortcut: 'H' },
-    { value: 'redact', icon: <EyeOff className="h-4 w-4" />, label: '遮挡', shortcut: 'R' },
-    { value: 'number', icon: <Hash className="h-4 w-4" />, label: '序号', shortcut: 'N' },
-    { value: 'arrow', icon: <ArrowUpRight className="h-4 w-4" />, label: '箭头', shortcut: 'A' },
-    { value: 'line', icon: <Minus className="h-4 w-4" />, label: '直线', shortcut: 'L' },
-    { value: 'freehand', icon: <Pencil className="h-4 w-4" />, label: '自由画笔', shortcut: 'P' },
-    { value: 'callout', icon: <MessageSquareQuote className="h-4 w-4" />, label: '说明气泡', shortcut: 'Q' },
-    { value: 'magnifier', icon: <Search className="h-4 w-4" />, label: '局部放大', shortcut: 'Z' },
-    { value: 'mosaic', icon: <ShieldCheck className="h-4 w-4" />, label: '打码', shortcut: 'M' },
-    { value: 'text', icon: <Type className="h-4 w-4" />, label: '文字', shortcut: 'T' },
-    { value: 'text-box', icon: <TextCursorInput className="h-4 w-4" />, label: '文字框', shortcut: 'G' },
-    { value: 'crop', icon: <Crop className="h-4 w-4" />, label: '裁剪', shortcut: 'C' },
-  ]
+  const TOOLS = TOOL_DEFINITIONS.map(t => ({ ...t, icon: <ToolIcon tool={t.value} /> }))
 
   const orderedTools = toolOrder.map(value => TOOLS.find(t => t.value === value)!).filter(Boolean)
 
@@ -1051,11 +985,10 @@ export default function Home() {
               ))}
             </div>}
 
-            {!selectedAnn && (tool === 'number' || tool === 'text' || tool === 'text-box' || tool === 'mosaic' || tool === 'line' || tool === 'arrow' || tool === 'freehand') && (() => {
-              const key = tool === 'number' ? 'numberR' : tool === 'text' || tool === 'text-box' ? 'textSize' : tool === 'mosaic' ? 'mosaicTile' : 'strokeWidth'
-              const min = key === 'mosaicTile' ? 8 : key === 'strokeWidth' ? 2 : 12
-              const max = key === 'mosaicTile' ? 48 : key === 'strokeWidth' ? 16 : 80
-              return <label className="flex shrink-0 items-center gap-2 border-l border-white/10 pl-3 text-slate-300">{key === 'numberR' ? '序号大小' : key === 'textSize' ? '字号' : key === 'mosaicTile' ? '打码强度' : '线宽'}<Slider min={min} max={max} value={[annStyle[key]]} onValueChange={([value]) => setAnnStyle(v => ({ ...v, [key]: value }))} className="w-28" /><span className="min-w-6 rounded-md bg-white/10 px-1.5 py-1 text-center tabular-nums text-white">{annStyle[key]}</span></label>
+            {!selectedAnn && TOOL_CATALOG[tool].parameter && TOOL_CATALOG[tool].parameter !== 'zoom' && (() => {
+              const key = TOOL_CATALOG[tool].parameter as 'numberR' | 'textSize' | 'mosaicTile' | 'strokeWidth'
+              const { label, min, max } = TOOL_PARAMETERS[key]
+              return <label className="flex shrink-0 items-center gap-2 border-l border-white/10 pl-3 text-slate-300">{label}<Slider min={min} max={max} value={[annStyle[key]]} onValueChange={([value]) => setAnnStyle(v => ({ ...v, [key]: value }))} className="w-28" aria-label={label} /><span className="min-w-6 rounded-md bg-white/10 px-1.5 py-1 text-center tabular-nums text-white">{annStyle[key]}</span></label>
             })()}
 
             {/* 样式模板：新建标注默认样式 + 预设管理 */}
@@ -1177,70 +1110,7 @@ export default function Home() {
               </PopoverContent>
             </Popover>
 
-            {/* 选中标注的尺寸调节 */}
-            {selectedAnn?.kind === 'text' && (
-              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
-                字号
-                <Slider
-                  min={16}
-                  max={80}
-                  value={[selectedAnn.size ?? 26]}
-                  onValueChange={([size]) => updateAnnSize({ size })}
-                  className="w-20"
-                  aria-label="文字字号"
-                />
-                <span className="w-6 tabular-nums">{selectedAnn.size ?? 26}</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'number' && (
-              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
-                序号大小
-                <Slider
-                  min={12}
-                  max={56}
-                  value={[selectedAnn.r ?? 20]}
-                  onValueChange={([r]) => updateAnnSize({ r })}
-                  className="w-20"
-                  aria-label="序号大小"
-                />
-                <span className="w-6 tabular-nums">{selectedAnn.r ?? 20}</span>
-              </label>
-            )}
-            {(selectedAnn?.kind === 'arrow' || selectedAnn?.kind === 'line' || selectedAnn?.kind === 'freehand') && (
-              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
-                {selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
-                <Slider
-                  min={2}
-                  max={16}
-                  value={[selectedAnn.width ?? ARROW_DEFAULT_WIDTH]}
-                  onValueChange={([width]) => updateAnnSize({ width })}
-                  className="w-20"
-                  aria-label={selectedAnn.kind === 'arrow' ? '箭头线宽' : selectedAnn.kind === 'line' ? '直线线宽' : '画笔粗细'}
-                />
-                <span className="w-6 tabular-nums">{selectedAnn.width ?? ARROW_DEFAULT_WIDTH}</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'mosaic' && (
-              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
-                打码强度
-                <Slider
-                  min={MOSAIC_MIN_TILE}
-                  max={MOSAIC_MAX_TILE}
-                  value={[selectedAnn.tile ?? MOSAIC_DEFAULT_TILE]}
-                  onValueChange={([tile]) => updateAnnSize({ tile })}
-                  className="w-20"
-                  aria-label="打码强度"
-                />
-                <span className="w-8 tabular-nums">{selectedAnn.tile ?? MOSAIC_DEFAULT_TILE}px</span>
-              </label>
-            )}
-            {selectedAnn?.kind === 'magnifier' && (
-              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
-                放大倍率
-                <Slider min={1.5} max={4} step={0.1} value={[selectedAnn.zoom]} onValueChange={([zoom]) => updateAnnSize({ zoom })} className="w-20" aria-label="放大倍率" />
-                <span className="w-8 tabular-nums">{selectedAnn.zoom.toFixed(1)}×</span>
-              </label>
-            )}
+            {selectedAnn && <AnnotationParameters annotation={selectedAnn} onChange={updateAnnSize} />}
             {selectedAnn?.kind === 'mosaic' && (
               <span className="text-[11px] text-slate-400">数值越大越模糊，二维码建议 ≥ 24px</span>
             )}
@@ -1264,7 +1134,7 @@ export default function Home() {
               </Button>
             )}
             {selectedAnn && selectedPage && <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 pl-2">
-              <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="复制标注" title="复制标注" onClick={() => { const shifted = 'points' in selectedAnn ? { ...selectedAnn, points: selectedAnn.points.map(p => ({ x: p.x + 12, y: p.y + 12 })) } : 'x1' in selectedAnn ? { ...selectedAnn, x1: selectedAnn.x1 + 12, y1: selectedAnn.y1 + 12, x2: selectedAnn.x2 + 12, y2: selectedAnn.y2 + 12 } : { ...selectedAnn, x: selectedAnn.x + 12, y: selectedAnn.y + 12 }; const copy = { ...shifted, id: uid() }; updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" /></Button>
+              <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="复制标注" title="复制标注" onClick={() => { const copy = duplicateAnnotation(selectedAnn, uid(), 12); updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" /></Button>
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="标注置顶" title="标注置顶" onClick={() => updatePage(selectedPage.id, { annotations: [...selectedPage.annotations.filter(a => a.id !== selectedAnn.id), selectedAnn] })}><ArrowUpToLine className="size-4" /></Button>
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="标注置底" title="标注置底" onClick={() => updatePage(selectedPage.id, { annotations: [selectedAnn, ...selectedPage.annotations.filter(a => a.id !== selectedAnn.id)] })}><ArrowDownToLine className="size-4" /></Button>
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" aria-label="删除标注" title="删除标注" onClick={() => { updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => a.id !== selectedAnn.id) }); setSelectedAnnId(null) }}><Trash2 className="size-4" /></Button>

@@ -1,5 +1,9 @@
+import { useAnnotationKeyboard } from '@/hooks/use-annotation-keyboard'
+import { HANDLES, HANDLE_CURSOR, handlePos, clamp, resizeRect, type ResizeHandle } from '@/lib/tools/canvas-geometry'
+import { translateAnnotation } from '@/lib/tools/annotation-geometry'
+import { TOOL_CATALOG } from '@/lib/tools/catalog'
 import { hitArea, isAreaAnnotation, renderAreaAnnotation } from '@/lib/tools/area'
-import { createAnnotation } from '@/lib/tools'
+import { createAnnotation, type DrawableTool } from '@/lib/tools'
 import { hitMark, isMarkAnnotation, renderMarkAnnotation } from '@/lib/tools/mark'
 import { createContentAnnotation, hitContent, isContentAnnotation, renderContentAnnotation } from '@/lib/tools/content'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -36,10 +40,8 @@ interface Props {
   onCrop?: (rect: Rect) => void
 }
 
-type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
-
 type DragState =
-  | { mode: 'create'; kind: 'box' | 'ellipse' | 'highlight' | 'redact' | 'mosaic' | 'callout' | 'magnifier'; startX: number; startY: number; id: string }
+  | { mode: 'create'; startX: number; startY: number; id: string }
   | { mode: 'freehand'; id: string }
   | { mode: 'move'; id: string; startX: number; startY: number; snapshot: Annotation }
   | { mode: 'resize'; id: string; handle: ResizeHandle; snapshot: Rect }
@@ -47,62 +49,6 @@ type DragState =
   | { mode: 'crop-handle'; handle: ResizeHandle; snapshot: Rect }
   | { mode: 'crop-move'; startX: number; startY: number; snapshot: Rect }
   | { mode: 'crop-draw'; startX: number; startY: number }
-
-const HANDLES: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
-
-const handlePos = (r: Rect, h: ResizeHandle) => {
-  switch (h) {
-    case 'nw':
-      return { x: r.x, y: r.y }
-    case 'n':
-      return { x: r.x + r.w / 2, y: r.y }
-    case 'ne':
-      return { x: r.x + r.w, y: r.y }
-    case 'e':
-      return { x: r.x + r.w, y: r.y + r.h / 2 }
-    case 'se':
-      return { x: r.x + r.w, y: r.y + r.h }
-    case 's':
-      return { x: r.x + r.w / 2, y: r.y + r.h }
-    case 'sw':
-      return { x: r.x, y: r.y + r.h }
-    case 'w':
-      return { x: r.x, y: r.y + r.h / 2 }
-  }
-}
-
-const HANDLE_CURSOR: Record<ResizeHandle, string> = {
-  nw: 'nwse-resize',
-  se: 'nwse-resize',
-  ne: 'nesw-resize',
-  sw: 'nesw-resize',
-  n: 'ns-resize',
-  s: 'ns-resize',
-  e: 'ew-resize',
-  w: 'ew-resize',
-}
-
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-
-/** 根据拖拽点和对侧固定的手柄，计算新矩形（钳制在图内，不小于 minSize） */
-function resizeRect(s: Rect, handle: ResizeHandle, px: number, py: number, bounds: { w: number; h: number }, minSize: number): Rect {
-  let { x, y, w, h } = s
-  const x2 = s.x + s.w
-  const y2 = s.y + s.h
-  if (handle === 'e' || handle === 'se' || handle === 'ne') w = clamp(px, s.x + minSize, bounds.w) - s.x
-  if (handle === 'w' || handle === 'sw' || handle === 'nw') {
-    const nx = clamp(px, 0, x2 - minSize)
-    w = x2 - nx
-    x = nx
-  }
-  if (handle === 's' || handle === 'se' || handle === 'sw') h = clamp(py, s.y + minSize, bounds.h) - s.y
-  if (handle === 'n' || handle === 'ne' || handle === 'nw') {
-    const ny = clamp(py, 0, y2 - minSize)
-    h = y2 - ny
-    y = ny
-  }
-  return { x, y, w, h }
-}
 
 function ResizeHandles({ r, stroke, handleR, onDown }: { r: Rect; stroke: string; handleR: number; onDown: (e: React.PointerEvent, h: ResizeHandle) => void }) {
   return <>{
@@ -342,16 +288,17 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       return
     }
 
-    if (tool === 'number' || tool === 'arrow' || tool === 'line' || tool === 'freehand') {
-      const ann = createAnnotation(tool, x, y, { color, numberR, mosaicTile, strokeWidth })
+    const interaction = TOOL_CATALOG[tool].interaction
+    if (interaction === 'point' || interaction === 'endpoints' || interaction === 'freehand') {
+      const ann = createAnnotation(tool as DrawableTool, x, y, { color, numberR, mosaicTile, strokeWidth })
       onChange([...page.annotations, ann])
       onSelect(ann.id)
-      if (tool === 'arrow' || tool === 'line') dragRef.current = { mode: 'arrow-end', id: ann.id, end: 'p2' }
-      if (tool === 'freehand') dragRef.current = { mode: 'freehand', id: ann.id }
+      if (interaction === 'endpoints') dragRef.current = { mode: 'arrow-end', id: ann.id, end: 'p2' }
+      if (interaction === 'freehand') dragRef.current = { mode: 'freehand', id: ann.id }
       return
     }
 
-    if (tool === 'text' || tool === 'text-box') {
+    if (interaction === 'text') {
       // 等 click 阶段再挂载自动聚焦的输入框，避免它被本次 pointer 序列立即 blur。
       return
     }
@@ -380,10 +327,10 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     }
 
     // 矩形和聚焦工具：拖拽创建
-    const ann = createAnnotation(tool as 'box' | 'ellipse' | 'highlight' | 'redact' | 'callout' | 'magnifier' | 'mosaic', x, y, { color, numberR, mosaicTile, strokeWidth })
+    const ann = createAnnotation(tool as DrawableTool, x, y, { color, numberR, mosaicTile, strokeWidth })
     onChange([...page.annotations, ann])
     onSelect(ann.id)
-    dragRef.current = { mode: 'create', kind: tool, startX: x, startY: y, id: ann.id }
+    dragRef.current = { mode: 'create', startX: x, startY: y, id: ann.id }
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -425,25 +372,8 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
         h: clamp(Math.abs(y - drag.startY), 0, bounds.h - ry),
       })
     } else if (drag.mode === 'move') {
-      const s = drag.snapshot
-      if (s.kind === 'number' || s.kind === 'text') {
-        updateAnnotation(drag.id, { x: s.x + x - drag.startX, y: s.y + y - drag.startY })
-      } else if (s.kind === 'arrow' || s.kind === 'line') {
-        const dx = x - drag.startX
-        const dy = y - drag.startY
-        updateAnnotation(drag.id, { x1: s.x1 + dx, y1: s.y1 + dy, x2: s.x2 + dx, y2: s.y2 + dy })
-      } else if (s.kind === 'freehand') {
-        const dx = x - drag.startX
-        const dy = y - drag.startY
-        updateAnnotation(drag.id, { points: s.points.map((point) => ({ x: point.x + dx, y: point.y + dy })) })
-      } else {
-        updateAnnotation(drag.id, {
-          x: s.x + x - drag.startX,
-          y: s.y + y - drag.startY,
-          w: s.w,
-          h: s.h,
-        })
-      }
+      const moved = translateAnnotation(drag.snapshot, x - drag.startX, y - drag.startY)
+      updateAnnotation(drag.id, moved)
     }
   }
 
@@ -451,7 +381,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     const drag = dragRef.current
     if (drag?.mode === 'create') {
       const ann = page.annotations.find((a) => a.id === drag.id)
-      if (ann && (ann.kind === 'box' || ann.kind === 'ellipse' || ann.kind === 'highlight' || ann.kind === 'redact' || ann.kind === 'mosaic' || ann.kind === 'callout' || ann.kind === 'magnifier') && (ann.w < 8 || ann.h < 8)) {
+      if (ann && 'w' in ann && 'h' in ann && (ann.w < 8 || ann.h < 8)) {
         onChange(page.annotations.filter((a) => a.id !== drag.id))
         onSelect(null)
       } else if (ann?.kind === 'callout') {
@@ -475,51 +405,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     dragRef.current = { mode: 'resize', id: ann.id, handle, snapshot: { x: ann.x, y: ann.y, w: ann.w, h: ann.h } }
   }
 
-  // 键盘：删除选中标注；Escape 取消裁剪选区或取消选择；方向键微移（Shift=10px）
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement
-      if (e.defaultPrevented || target.closest('input,textarea,select,[role=slider],[role=separator],[role=tab],[role=menuitem]') || target.isContentEditable) return
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && tool !== 'crop') {
-        onChange(page.annotations.filter((a) => a.id !== selectedId))
-        onSelect(null)
-      }
-      if (e.key === 'Escape') {
-        if (tool === 'crop') setCropRect({ x: 0, y: 0, w: page.width, h: page.height })
-        else onSelect(null)
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && selectedId) {
-        const ann = page.annotations.find((a) => a.id === selectedId)
-        if (ann) {
-          e.preventDefault()
-          let copy: Annotation = { ...ann, id: uid() }
-          if (ann.kind === 'arrow' || ann.kind === 'line') copy = { ...ann, id: uid(), x1: ann.x1 + 16, y1: ann.y1 + 16, x2: ann.x2 + 16, y2: ann.y2 + 16 }
-          else if (ann.kind === 'freehand') copy = { ...ann, id: uid(), points: ann.points.map((point) => ({ x: point.x + 16, y: point.y + 16 })) }
-          else copy = { ...ann, id: uid(), x: ann.x + 16, y: ann.y + 16 }
-          onChange([...page.annotations, copy])
-          onSelect(copy.id)
-        }
-      }
-      if (e.key.startsWith('Arrow') && selectedId) {
-        const step = e.shiftKey ? 10 : 1
-        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
-        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
-        if (!dx && !dy) return
-        e.preventDefault()
-        const ann = page.annotations.find((a) => a.id === selectedId)
-        if (!ann) return
-        if (ann.kind === 'arrow' || ann.kind === 'line') {
-          updateAnnotation(selectedId, { x1: ann.x1 + dx, y1: ann.y1 + dy, x2: ann.x2 + dx, y2: ann.y2 + dy })
-        } else if (ann.kind === 'freehand') {
-          updateAnnotation(selectedId, { points: ann.points.map((point) => ({ x: point.x + dx, y: point.y + dy })) })
-        } else {
-          updateAnnotation(selectedId, { x: ann.x + dx, y: ann.y + dy })
-        }
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, tool, page.annotations, page.width, page.height, onChange, onSelect, updateAnnotation])
+  useAnnotationKeyboard({ page, tool, selectedId, onChange, onSelect, updateAnnotation, onResetCrop: () => setCropRect({ x: 0, y: 0, w: page.width, h: page.height }) })
 
   const numbers = page.annotations.filter((a) => a.kind === 'number')
   const numOf = new Map(numbers.map((n, i) => [n.id, i + 1]))
@@ -550,7 +436,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
               suppressTextClickRef.current = false
               return
             }
-            if ((tool !== 'text' && tool !== 'text-box') || editingTextId) return
+            if (TOOL_CATALOG[tool].interaction !== 'text' || editingTextId) return
             const { x, y } = toNatural(e)
             // 文字标注内部保存首行基线；点击位置应对应文字框的左上角。
             setTextPos({ x, y: y + textSize, background: tool === 'text-box' })
