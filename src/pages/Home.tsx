@@ -71,6 +71,8 @@ import { storageErrorMessage } from '@/lib/storage-errors'
 import { setRecoveryProject } from '@/lib/crash-recovery'
 import { startEditorPhase } from '@/lib/editor-performance'
 import { InputSettlement, isComposingKey } from '@/lib/input-settlement'
+import { hasActiveFileOperation, isDesktop, openProjectFile, saveFile } from '@/lib/files'
+import { useDesktopClose } from '@/hooks/use-desktop-close'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
@@ -480,6 +482,14 @@ export default function Home() {
     try { setLocalProjects(await listLocalProjects()); setLibraryOpen(true) }
     catch { toast.error('本地项目列表读取失败，请重试') }
   }
+  useDesktopClose(async () => {
+    if (exporting || hasActiveFileOperation()) { toast.info('请先完成或取消文件操作，再关闭窗口'); return false }
+    if (storageReady && await persistCurrent()) return true
+    const { confirm } = await import('@tauri-apps/plugin-dialog')
+    return confirm('本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
+      title: 'OnlyPing · 未保存内容', kind: 'warning', okLabel: '仍然关闭', cancelLabel: '留在编辑器',
+    })
+  }, () => toast.error('关闭前保存失败，请先备份项目后重试'))
   const restoreLocal = async (entry: LocalProjectEntry) => {
     if (!await persistCurrent()) return
     try {
@@ -726,12 +736,8 @@ export default function Home() {
       const blob = new Blob([JSON.stringify({ schemaVersion: 1, projectId: sourceProjectId, ...snapshot() }, null, 2)], {
         type: 'application/json',
       })
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = `${metadataRef.current.title || '明白纸项目'}.json`
-      a.click()
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000)
-    } catch (error) { toast.error('项目备份失败，请保留当前页面并重试', { description: error instanceof Error ? error.message : '输入收尾失败' }) }
+      await saveFile(blob, `${metadataRef.current.title || '明白纸项目'}.json`)
+    } catch (error) { if (!isTaskCancelled(error)) toast.error('项目备份失败，请保留当前页面并重试', { description: error instanceof Error ? error.message : '输入收尾失败' }) }
   }
 
   const createProject = async () => {
@@ -796,6 +802,12 @@ export default function Home() {
       }
     }
     reader.readAsText(file)
+  }
+
+  const chooseProject = async () => {
+    if (!isDesktop()) { projectFileRef.current?.click(); return }
+    try { const file = await openProjectFile(); if (file) loadProject(file) }
+    catch (error) { toast.error('项目读取失败', { description: error instanceof Error ? error.message : '请重试' }) }
   }
 
   const [toolOrder, setToolOrder] = useState<Tool[]>(() => {
@@ -884,7 +896,7 @@ export default function Home() {
               <button type="button" onClick={autosave.retry} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
             </span>
           )}
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem><DropdownMenuItem onClick={() => void openLocalProjects()}><FolderOpen className="mr-2 size-4" />本地项目与历史版本</DropdownMenuItem><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => projectFileRef.current?.click()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem><DropdownMenuItem onClick={() => void openLocalProjects()}><FolderOpen className="mr-2 size-4" />本地项目与历史版本</DropdownMenuItem><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => void chooseProject()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <input
             ref={projectFileRef}
             type="file"

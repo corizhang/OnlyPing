@@ -1,18 +1,14 @@
 import { Component, type ReactNode } from 'react'
-import { getRecoveryProject } from '@/lib/crash-recovery'
+import { downloadRecoveryBackup, getRecoveryProject } from '@/lib/crash-recovery'
+import { isTaskCancelled } from '@/lib/render-task'
 
 export default class AppErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean; downloadError: boolean }> {
   state = { failed: false, downloadError: false }
   static getDerivedStateFromError() { return { failed: true } }
-  download = () => {
+  download = async () => {
     try {
-      const project = getRecoveryProject()
-      if (!project) return
-      const url = URL.createObjectURL(new Blob([JSON.stringify(project)], { type: 'application/json' }))
-      const anchor = document.createElement('a')
-      anchor.href = url; anchor.download = 'OnlyPing-故障恢复备份.json'; anchor.click()
-      setTimeout(() => URL.revokeObjectURL(url), 5000)
-    } catch { this.setState({ downloadError: true }) }
+      await downloadRecoveryBackup()
+    } catch (error) { if (!isTaskCancelled(error)) this.setState({ downloadError: true }) }
   }
   render() {
     if (!this.state.failed) return this.props.children

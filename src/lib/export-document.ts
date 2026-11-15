@@ -16,7 +16,7 @@ export async function exportPdf(title: string, pages: Page[], style: ExportStyle
     pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight())
   } })
   await taskCheckpoint(task, '正在打包 PDF', pages.length, pages.length)
-  pdf.save(`${title || '明白纸'}.pdf`)
+  await download(pdf.output('blob'), `${title || '明白纸'}.pdf`, task.signal)
 }
 
 export async function exportLongImage(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1, task: RenderTask = {}) {
@@ -27,5 +27,5 @@ export async function exportLongImage(title: string, pages: Page[], style: Expor
   } })
   const file = await packageLongImages(title, blobs, task)
   checkTask(task)
-  download(file.blob, file.filename)
+  await download(file.blob, file.filename, task.signal)
 }

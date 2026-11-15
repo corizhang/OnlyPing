@@ -10,6 +10,8 @@ export default defineConfig({
   plugins: [inspectAttr(), react()],
   server: {
     port: 3000,
+    strictPort: true,
+    watch: { ignored: ['**/src-tauri/**'] },
   },
   resolve: {
     alias: {

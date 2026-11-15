@@ -6,6 +6,7 @@ export { mosaicCanvasRegion } from './pixelate'
 import type { Page } from '@/types'
 import { magnifierTool } from './tools/magnifier'
 import { startEditorPhase } from './editor-performance'
+import { saveFile } from './files'
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>()
 const imagePixels = new Map<string, number>()
@@ -102,11 +103,7 @@ export async function downloadPageImage(page: Page, numberStart = 0, task: Rende
   try {
     const blob = await canvasBlob(canvas, task)
     checkTask(task)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.download = `${page.name || 'page'}-标注.png`
-    a.href = url
-    try { a.click() } finally { setTimeout(() => URL.revokeObjectURL(url), 5000) }
+    await saveFile(blob, `${page.name || 'page'}-标注.png`, task.signal)
   } finally { releaseCanvas(canvas) }
 }
 

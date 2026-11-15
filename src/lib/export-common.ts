@@ -1,11 +1,8 @@
 import type { ExportFooter } from '@/types'
+import { saveFile } from './files.ts'
 
-export function download(blob: Blob, filename: string) {
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = filename
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+export async function download(blob: Blob, filename: string, signal?: AbortSignal) {
+  await saveFile(blob, filename, signal)
 }
 
 /** 组装页脚文本：编制单位 + 日期 + 版本 */

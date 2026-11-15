@@ -129,5 +129,5 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
   await taskCheckpoint(task, '正在打包 Word', pages.length, pages.length)
   const blob = await Packer.toBlob(doc)
   checkTask(task)
-  download(blob, `${title || '明白纸'}.docx`)
+  await download(blob, `${title || '明白纸'}.docx`, task.signal)
 }
