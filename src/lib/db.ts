@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { DEFAULT_EXPORT_STYLE, DEFAULT_EXPORT_FOOTER } from '@/types'
+import { ImageAssetCache } from './image-asset-cache.ts'
 /** 基于 IndexedDB 的本地存档：配额为磁盘级，可容纳含大量截图的项目 */
 
 const DB_NAME = 'mingbai-tool'
@@ -22,41 +23,89 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 let writeQueue: Promise<void> = Promise.resolve()
-const assetKeys = new Map<string, string>()
+const assetKeys = new ImageAssetCache()
 const observedVersions = new Map<string, string>()
 const fingerprint = (value: unknown) => JSON.stringify({ ...(value as object), savedAt: 0 })
 export class ProjectConflictError extends Error {
   constructor() { super('此项目已在其他页面修改，请下载当前项目备份后重新打开本地项目') }
 }
 
-async function packImages(value: ProjectData) {
-  const assets = new Map<string, string>()
-  const pack = async (image: string) => {
-    let key = assetKeys.get(image)
-    if (!key) {
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(image))
-      key = `asset:${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')}`
-      assetKeys.set(image, key)
-      if (assetKeys.size > 4) assetKeys.delete(assetKeys.keys().next().value!)
+function pruneUnusedImages(tx: IDBTransaction) {
+  const records = tx.objectStore(STORE).getAll()
+  records.onsuccess = () => {
+    const used = new Set<string>()
+    for (const record of records.result.flat()) {
+      for (const page of record?.pages ?? []) {
+        used.add(page.image)
+        if (page.orig) used.add(page.orig.image)
+      }
     }
+    const cursor = tx.objectStore('images').openKeyCursor()
+    cursor.onsuccess = () => {
+      const row = cursor.result
+      if (!row) return
+      if (!used.has(String(row.key))) tx.objectStore('images').delete(row.key)
+      row.continue()
+    }
+  }
+}
+
+/** Deletion shares the save queue and transaction so history/assets cannot race. */
+export function deleteLocalProject(key: string): Promise<void> {
+  if (!key.startsWith('project:') || key.length <= 8) return Promise.reject(new Error('无效项目'))
+  const task = writeQueue.catch(() => undefined).then(async () => {
+    const db = await openDB()
+    return new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE, 'images'], 'readwrite')
+      const store = tx.objectStore(STORE)
+      store.delete(key)
+      store.delete(`history:${key}`)
+      store.put(true, `deleted:${key}`)
+      for (const alias of [KEY, 'backup']) {
+        const req = store.get(alias)
+        req.onsuccess = () => {
+          if (req.result && `project:${req.result.projectId ?? 'legacy'}` === key) store.delete(alias)
+        }
+      }
+      // Queue the scan after alias callbacks have queued their deletions.
+      const barrier = store.get(key)
+      barrier.onsuccess = () => pruneUnusedImages(tx)
+      tx.oncomplete = () => { observedVersions.delete(key); db.close(); resolve() }
+      tx.onabort = tx.onerror = () => { db.close(); reject(tx.error ?? new Error('删除失败，原项目仍保留')) }
+    })
+  })
+  writeQueue = task
+  return task
+}
+
+async function packImages(value: ProjectData, owners: ProjectData['pages']) {
+  const assets = new Map<string, string>()
+  const pack = async (image: string, owner: object) => {
+    const key = await assetKeys.key(image, owner)
     assets.set(key, image)
     return key
   }
   const pages = []
-  for (const page of value.pages) pages.push({ ...page, image: await pack(page.image), orig: page.orig ? { ...page.orig, image: await pack(page.orig.image) } : undefined })
+  for (let i = 0; i < value.pages.length; i++) {
+    const page = value.pages[i], owner = owners[i] ?? page
+    pages.push({ ...page, image: await pack(page.image, owner), orig: page.orig ? { ...page.orig, image: await pack(page.orig.image, owner.orig ?? page.orig) } : undefined })
+  }
   return { packed: { ...value, pages }, assets }
 }
 
 export function idbSet(value: unknown): Promise<void> {
   const valid = validateAutosave(value)
   if (!valid) return Promise.reject(new Error('项目包含无效数据，未覆盖存档'))
-  const task = writeQueue.catch(() => undefined).then(() => writeProject(valid))
+  // Capture identities separately: validation clones records, while immutable
+  // React pages keep unchanged screenshot owners stable between edits.
+  const owners = [...(value as ProjectData).pages]
+  const task = writeQueue.catch(() => undefined).then(() => writeProject(valid, owners))
   writeQueue = task
   return task
 }
 
-async function writeProject(value: ProjectData): Promise<void> {
-  const { packed, assets } = await packImages(value)
+async function writeProject(value: ProjectData, owners: ProjectData['pages']): Promise<void> {
+  const { packed, assets } = await packImages(value, owners)
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE, 'images'], 'readwrite')
@@ -64,26 +113,11 @@ async function writeProject(value: ProjectData): Promise<void> {
     const projectKey = `project:${value.projectId ?? 'legacy'}`
     const previous = store.get(projectKey)
     let conflict = false
+    let deleted = false
+    let failure: DOMException | null = null
     let committedVersion = ''
-    const pruneUnusedImages = () => {
-      const records = store.getAll()
-      records.onsuccess = () => {
-        const used = new Set<string>()
-        for (const record of records.result.flat()) {
-          for (const page of record?.pages ?? []) {
-            used.add(page.image)
-            if (page.orig) used.add(page.orig.image)
-          }
-        }
-        const cursor = tx.objectStore('images').openCursor()
-        cursor.onsuccess = () => {
-          const row = cursor.result
-          if (!row) return
-          if (!used.has(String(row.key))) row.delete()
-          row.continue()
-        }
-      }
-    }
+    const tombstone = store.get(`deleted:${projectKey}`)
+    tombstone.onsuccess = () => { if (tombstone.result) { deleted = true; tx.abort() } }
     previous.onsuccess = () => {
       const old = previous.result
       const unchanged = old && fingerprint(old) === fingerprint(packed)
@@ -98,26 +132,30 @@ async function writeProject(value: ProjectData): Promise<void> {
         const revisions = store.get(`history:${projectKey}`)
         revisions.onsuccess = () => {
           store.put([old, ...(revisions.result ?? [])].slice(0, 3), `history:${projectKey}`)
-          pruneUnusedImages()
+          pruneUnusedImages(tx)
         }
       }
-      for (const [key, image] of assets) tx.objectStore('images').put(image, key)
+      for (const [key, image] of assets) {
+        // Check in this transaction rather than trusting an in-memory existence
+        // cache: another tab or resource cleanup may have removed the asset.
+        const req = tx.objectStore('images').getKey(key)
+        req.onsuccess = () => { if (req.result === undefined) tx.objectStore('images').put(image, key) }
+      }
       store.put(unchanged ? old : packed, projectKey)
       store.put(unchanged ? old : packed, KEY)
-      if (!old || unchanged) pruneUnusedImages()
+      if (!old) pruneUnusedImages(tx)
     }
     tx.oncomplete = () => {
       observedVersions.set(projectKey, committedVersion)
       db.close()
       resolve()
     }
-    tx.onerror = () => {
-      db.close()
-      reject(tx.error ?? new Error('IndexedDB 写入失败'))
-    }
+    // Aborting pending requests emits error events before the final abort event.
+    // Preserve the original request failure, but settle only after rollback.
+    tx.onerror = event => { failure = (event.target as IDBRequest).error ?? tx.error }
     tx.onabort = () => {
       db.close()
-      reject(conflict ? new ProjectConflictError() : tx.error ?? new Error('IndexedDB 写入被中止'))
+      reject(deleted ? new Error('此项目已在其他页面删除，请下载当前项目备份后作为新项目导入') : conflict ? new ProjectConflictError() : tx.error ?? failure ?? new Error('IndexedDB 写入被中止'))
     }
   })
 }

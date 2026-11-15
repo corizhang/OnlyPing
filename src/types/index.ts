@@ -130,6 +130,7 @@ export interface Page {
 }
 
 export interface AIConfig {
+  keyStorage?: 'session' | 'local'
   baseUrl: string
   apiKey: string
   model: string

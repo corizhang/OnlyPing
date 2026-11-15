@@ -56,16 +56,19 @@ import { Label } from '@/components/ui/label'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
 import { toast } from 'sonner'
-import AIPanel from '@/components/AIPanel'
+import AsyncAIPanel from '@/components/AsyncAIPanel'
 import CanvasEditor from '@/components/CanvasEditor'
 import StepNotesEditor from '@/components/StepNotesEditor'
 import ExportPreview from '@/components/ExportPreview'
 import PageList from '@/components/PageList'
-import { loadAIConfig } from '@/lib/ai'
-import { aiPrivacyScanPage } from '@/lib/ai'
+import { loadAIConfig } from '@/lib/ai-config'
 import { rectCoverage, runConsistencyChecks, type CheckIssue } from '@/lib/check'
 import { idbGet, idbSet, validateAutosave, listLocalProjects, readLocalProject, ProjectConflictError, type LocalProjectEntry, type ProjectData } from '@/lib/db'
 import { useProjectAutosave } from '@/hooks/use-project-autosave'
+import ProjectLibrary from '@/components/ProjectLibrary'
+import { deleteLocalProject } from '@/lib/db'
+import { storageErrorMessage } from '@/lib/storage-errors'
+import { setRecoveryProject } from '@/lib/crash-recovery'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
@@ -191,6 +194,8 @@ export default function Home() {
   const [issues, setIssues] = useState<CheckIssue[]>([])
   const [checkOpen, setCheckOpen] = useState(false)
   const [aiScanning, setAiScanning] = useState(false)
+  const privacyController = useRef<AbortController | null>(null)
+  useEffect(() => () => privacyController.current?.abort(), [projectId])
   const [aiScanProgress, setAiScanProgress] = useState('')
   // 上次检查时的项目指纹（null = 尚未检查）；不一致则状态灯提示需复查
   const [checkSig, setCheckSig] = useState<string | null>(null)
@@ -340,6 +345,8 @@ export default function Home() {
           .filter((a) => a.kind === 'mosaic' || a.kind === 'redact')
           .map((a) => ({ x: a.x / p.width, y: a.y / p.height, w: a.w / p.width, h: a.h / p.height }))
         const pageForAI = await preparePageForAI(p, privacyMode)
+        const { aiPrivacyScanPage } = await import('@/lib/ai')
+        checkTask(task)
         const results = await aiPrivacyScanPage(aiConfig, pageForAI, mosaics, task.signal)
         checkTask(task)
         for (const r of results) {
@@ -367,13 +374,23 @@ export default function Home() {
   }
 
   const runAIPrivacyScan = async () => {
-    if (aiScanning || !pages.length) return
+    if (aiScanning || privacyController.current || !pages.length) return
+    const controller = new AbortController()
+    privacyController.current = controller
     setAiScanning(true)
     setAiScanProgress('')
-    const found = await collectAiPrivacyIssues()
-    setAiScanning(false)
-    setAiScanProgress('')
-    setIssues((prev) => [...prev.filter((i) => i.category !== '隐私'), ...found])
+    try {
+      const found = await collectAiPrivacyIssues({ signal: controller.signal })
+      controller.signal.throwIfAborted()
+      setIssues((prev) => [...prev.filter((i) => i.category !== '隐私'), ...found])
+    } catch (err) {
+      if (isTaskCancelled(err)) toast.info('已取消隐私扫描')
+      else toast.error('隐私扫描失败，请重试')
+    } finally {
+      privacyController.current = null
+      setAiScanning(false)
+      setAiScanProgress('')
+    }
   }
 
   // 标注样式与预设持久化到 localStorage（用户级偏好）
@@ -416,6 +433,7 @@ export default function Home() {
   const deletePreset = (id: string) => setPresets((prev) => prev.filter((p) => p.id !== id))
 
   const saveData = useMemo(() => ({ schemaVersion: 1 as const, projectId, title, pages, exportStyle, exportFooter }), [projectId, title, pages, exportStyle, exportFooter])
+  useEffect(() => { if (storageReady) setRecoveryProject(saveData) }, [storageReady, saveData])
   const autosave = useProjectAutosave(saveData, storageReady, pendingText)
   const persistCurrent = async () => {
     if (!storageReady) return true
@@ -431,12 +449,12 @@ export default function Home() {
           return true
         } catch { /* 副本失败时保留当前工作区 */ }
       }
-      toast.error('当前项目保存失败，请先下载项目备份')
+      toast.error('当前项目保存失败，请先下载项目备份', { description: storageErrorMessage(err) })
       return false
     }
   }
   const openLocalProjects = async () => {
-    if (!await persistCurrent()) return
+    await persistCurrent()
     try { setLocalProjects(await listLocalProjects()); setLibraryOpen(true) }
     catch { toast.error('本地项目列表读取失败，请重试') }
   }
@@ -502,7 +520,7 @@ export default function Home() {
   }
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
-  const numberStarts = computeNumberStarts(pages)
+  const numberStarts = useMemo(() => computeNumberStarts(pages), [pages])
   const selectedAnnotations = selectedPage?.annotations.filter(a => selectedAnnIds.includes(a.id)) ?? []
   const selectedAnn = selectedAnnotations.length === 1 && !selectedAnnotations[0].locked && !selectedAnnotations[0].hidden ? selectedAnnotations[0] : null
   const editableAnnotations = editableSelection(selectedPage?.annotations ?? [], selectedAnnIds)
@@ -520,19 +538,21 @@ export default function Home() {
       ? `已选中${selectedAnnName}，可拖动位置或调整大小，Ctrl+D 复制，Delete 删除`
       : '空格 + 拖动平移'
 
+  const canvasWidth = selectedPage?.width
+  const canvasHeight = selectedPage?.height
   useEffect(() => {
     const el = viewportRef.current
-    if (!el || !selectedPage || zoomMode === 'manual') return
+    if (!el || !canvasWidth || !canvasHeight || zoomMode === 'manual') return
     const fit = () => {
-      const width = Math.max(1, el.clientWidth - 32) / selectedPage.width
-      const height = Math.max(1, el.clientHeight - 64) / selectedPage.height
+      const width = Math.max(1, el.clientWidth - 32) / canvasWidth
+      const height = Math.max(1, el.clientHeight - 64) / canvasHeight
       setZoom(Math.min(1, zoomMode === 'width' ? width : Math.min(width, height)))
     }
     fit()
     const observer = new ResizeObserver(fit)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [selectedPage?.id, selectedPage?.width, selectedPage?.height, zoomMode, rightOpen])
+  }, [selectedPageId, canvasWidth, canvasHeight, zoomMode, rightOpen])
 
   const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number; zoom?: number; color?: string; text?: string }) => {
     if (!selectedPage || !selectedAnnId) return
@@ -1381,7 +1401,7 @@ export default function Home() {
                   </div>
                   <div>
                     <Label className="mb-1.5 block text-xs text-[#bcbcbc]">说明文字</Label>
-                    <StepNotesEditor key={selectedPage.id} notes={selectedPage.notes} notesRich={selectedPage.notesRich}
+                    <StepNotesEditor key={projectId} documentId={selectedPage.id} notes={selectedPage.notes} notesRich={selectedPage.notesRich}
                       onChange={(notes, notesRich) => updatePage(selectedPage.id, { notes, notesRich }, true)} />
                   </div>
                 </div>
@@ -1389,7 +1409,10 @@ export default function Home() {
             </div>
           </div>
           <div className={`${inspector === 'ai' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
-        <AIPanel
+        <AsyncAIPanel
+          enabled={inspector === 'ai'}
+          key={projectId}
+          projectId={projectId}
           config={aiConfig}
           onConfigChange={setAIConfig}
           pages={pages}
@@ -1402,7 +1425,12 @@ export default function Home() {
         />          </div>
         </aside>
       </div>
-      <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}><DialogContent className="max-h-[80vh] overflow-auto"><DialogHeader><DialogTitle>本地项目与历史版本</DialogTitle><DialogDescription>保存在当前浏览器；清除网站数据会删除这些存档，请定期下载项目备份。每个项目保留最近 3 个不同版本。</DialogDescription></DialogHeader><div className="space-y-2">{localProjects.length === 0 && <p>暂无本地项目</p>}{localProjects.map(entry => <button type="button" key={`${entry.key}:${entry.revision ?? 'latest'}`} onClick={() => void restoreLocal(entry)} className="flex w-full items-center justify-between rounded border p-3 text-left hover:bg-muted"><span className="min-w-0"><span className="block truncate text-sm">{entry.title}</span><span className="text-xs text-muted-foreground">{entry.pages} 个步骤 · {new Date(entry.savedAt).toLocaleString()}</span></span><span className="ml-2 shrink-0 text-xs">{entry.revision === undefined ? '打开项目' : '恢复此版本'}</span></button>)}</div></DialogContent></Dialog>
+      <ProjectLibrary open={libraryOpen} onOpenChange={setLibraryOpen} entries={localProjects} activeKey={`project:${projectId}`} onRestore={entry => void restoreLocal(entry)} onBackup={saveProject} onDelete={async entry => {
+        if (entry.key === `project:${projectId}`) throw new Error('请先切换到其他项目，再删除此项目')
+        await deleteLocalProject(entry.key)
+        setLocalProjects(await listLocalProjects())
+        toast.success('已删除项目、历史版本及独占图片')
+      }} />
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{orderedTools.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Shift 点击多选 · Ctrl+A 选择可编辑标注 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
       <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会保存当前项目，可从本地项目列表重新打开。建议定期下载项目备份。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
       <ExportPreview
@@ -1462,6 +1490,7 @@ export default function Home() {
               <ShieldAlert className="mr-1.5 h-4 w-4" />
               {aiScanning ? aiScanProgress || '扫描中…' : 'AI 隐私扫描'}
             </Button>
+            {aiScanning && <Button size="sm" variant="outline" onClick={() => privacyController.current ? privacyController.current.abort() : exportTask.cancel()}>取消扫描</Button>}
             <span className="text-[11px] text-slate-400">
               {aiConfig.demo
                 ? '演示模式：模拟扫描结果'

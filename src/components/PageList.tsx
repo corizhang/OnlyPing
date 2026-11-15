@@ -1,6 +1,7 @@
 import { matchesStep, type StepFilter } from '@/lib/selection'
-import { useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Copy, GripVertical, ImagePlus, Trash2 } from 'lucide-react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, Copy, ImagePlus, Trash2 } from 'lucide-react'
+import PageListRow from './PageListRow'
 import { Button } from '@/components/ui/button'
 import type { Page } from '@/types'
 
@@ -18,7 +19,11 @@ interface Props {
 export default function PageList({ pages, selectedId, onSelect, onImportFiles, onMove, onRemove, onDuplicate, onReorder }: Props) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<StepFilter>('all')
-  const visiblePages = pages.map((page, index) => ({ page, index })).filter(({ page }) => matchesStep(page, query, filter))
+  const visiblePages = useMemo(() => pages.map((page, index) => ({ page, index })).filter(({ page }) => matchesStep(page, query, filter)), [pages, query, filter])
+  const actions = useRef({ onSelect, onReorder })
+  useLayoutEffect(() => { actions.current = { onSelect, onReorder } }, [onSelect, onReorder])
+  const selectRow = useCallback((id: string) => actions.current.onSelect(id), [])
+  const reorderRows = useCallback((source: string, target: string) => actions.current.onReorder(source, target), [])
   const fileRef = useRef<HTMLInputElement>(null)
   const selectedIndex = pages.findIndex((page) => page.id === selectedId)
   const selectedPage = pages[selectedIndex]
@@ -54,37 +59,8 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
             <p className="mt-1 text-[11px] text-[#a5a5a5]">添加截图后即可开始标注</p>
           </div>
         )}
-        {visiblePages.map(({ page, index }) => (
-          <div
-            key={page.id}
-            role="listitem"
-            draggable={!query.trim() && filter === 'all'}
-            onDragStart={(event) => { event.dataTransfer.setData('application/x-onlyping-step', page.id); event.dataTransfer.effectAllowed = 'move' }}
-            onDragOver={(event) => { if (event.dataTransfer.types.includes('application/x-onlyping-step')) event.preventDefault() }}
-            onDrop={(event) => { const source = event.dataTransfer.getData('application/x-onlyping-step'); if (!source) return; event.preventDefault(); event.stopPropagation(); onReorder(source, page.id) }}
-            className={`group border-b border-white/[0.07] ${page.id === selectedId ? 'bg-[#36577e] text-white' : 'hover:bg-white/[0.06]'}`}
-          >
-            <button
-              type="button"
-              onClick={() => onSelect(page.id)}
-              className="flex h-[62px] w-full items-center gap-2 px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#77b7ff]"
-              aria-current={page.id === selectedId ? 'page' : undefined}
-              title={`${index + 1}. ${page.name || `未命名步骤 ${index + 1}`}`}
-            >
-              <span className="w-5 shrink-0 text-center text-xs tabular-nums text-inherit/80">{index + 1}</span>
-              <span className="flex h-[48px] w-[40px] shrink-0 items-center justify-center overflow-hidden border border-white/15 bg-white">
-                <img draggable={false} src={page.image} alt="" className="max-h-full max-w-full object-contain" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium">{page.name || `未命名步骤 ${index + 1}`}</span>
-                <span className={`mt-1 block truncate text-[10px] ${page.id === selectedId ? 'text-[#d4e4f5]' : 'text-[#929292]'}`}>
-                  {page.notes || `${page.width} × ${page.height} px`}
-                </span>
-              </span>
-              <GripVertical className={`size-3.5 shrink-0 ${page.id === selectedId ? 'text-white/70' : 'text-[#777] group-hover:text-[#bbb]'}`} aria-hidden="true" />
-            </button>
-          </div>
-        ))}
+        {visiblePages.map(({ page, index }) => <PageListRow key={page.id} page={page} index={index} selected={page.id === selectedId}
+          sortable={!query.trim() && filter === 'all'} onSelect={selectRow} onReorder={reorderRows} />)}
       </div>
 
       <div className="flex h-11 shrink-0 items-center justify-between border-t border-white/10 bg-[#202020] px-2">

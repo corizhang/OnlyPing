@@ -1,3 +1,5 @@
+import { useAITask } from '@/hooks/use-ai-task'
+import { runAIBatch } from '@/lib/ai-batch'
 import { useState } from 'react'
 import { Box, CheckCircle2, CircleAlert, FileText, Hash, Info, RotateCcw, ShieldCheck, Settings, Sparkles, WandSparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -20,6 +22,7 @@ import { aiAnnotateFromDescription, aiGenerateDescription, aiSuggestMosaics, aiS
 import { preparePageForAI } from '@/lib/render'
 
 interface Props {
+  projectId: string
   config: AIConfig & { demo: boolean }
   onConfigChange: (cfg: AIConfig & { demo: boolean }) => void
   pages: Page[]
@@ -27,42 +30,34 @@ interface Props {
   onUpdatePage: (id: string, patch: Partial<Page>, expected: Page) => void
 }
 
-export default function AIPanel({ config, onConfigChange, pages, selectedPageId, onUpdatePage }: Props) {
-  const [status, setStatus] = useState<{ kind: 'info' | 'ok' | 'err'; text: string } | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
+export default function AIPanel({ projectId, config, onConfigChange, pages, selectedPageId, onUpdatePage }: Props) {
+  const { busy, status, setStatus, run, cancel } = useAITask(projectId)
   const [draft, setDraft] = useState(config)
   const [privacy, setPrivacy] = useState(() => localStorage.getItem('mbz-privacy') !== '0')
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
 
   /** 隐私模式：AI 调用前先应用本地已有的打码标注，并重编码图片（去除元数据） */
-  const redactForAI = (page: Page): Promise<Page> => preparePageForAI(page, privacy)
-
-  const run = async (key: string, fn: () => Promise<string>) => {
-    setBusy(key)
-    setStatus(null)
-    try {
-      const msg = await fn()
-      setStatus({ kind: 'ok', text: msg })
-    } catch (err) {
-      setStatus({ kind: 'err', text: err instanceof Error ? err.message : String(err) })
-    } finally {
-      setBusy(null)
-    }
+  const redactForAI = async (page: Page, signal: AbortSignal): Promise<Page> => {
+    signal.throwIfAborted()
+    const prepared = await preparePageForAI(page, privacy)
+    signal.throwIfAborted()
+    return prepared
   }
 
   const genDesc = (page: Page, index: number) =>
-    run(`desc-${page.id}`, async () => {
+    run(`desc-${page.id}`, async signal => {
       const prev = index > 0 ? pages[index - 1].notes : ''
       const numberStart = computeNumberStarts(pages).get(page.id) ?? 0
-      const text = await aiGenerateDescription(config, await redactForAI(page), index, pages.length, prev, numberStart)
+      const text = await aiGenerateDescription(config, await redactForAI(page, signal), index, pages.length, prev, numberStart, signal)
+      signal.throwIfAborted()
       onUpdatePage(page.id, { notes: text }, page)
       return `已根据标注生成「${page.name}」的说明文字，请检查是否与序号对应`
     })
 
   // 路线 A：先写说明，AI 按说明框选 + 标序号
-  const buildAnnotate = async (page: Page, notes: string) => {
-    const res = await aiAnnotateFromDescription(config, await redactForAI(page), notes)
+  const buildAnnotate = async (page: Page, notes: string, signal: AbortSignal) => {
+    const res = await aiAnnotateFromDescription(config, await redactForAI(page, signal), notes, signal)
     const anns: Annotation[] = [
         ...res.boxes.map((b) => ({
           id: uid(),
@@ -84,43 +79,37 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
   }
 
   const genAnnotateFromNotes = (page: Page) =>
-    run(`ann-${page.id}`, async () => {
+    run(`ann-${page.id}`, async signal => {
       if (!page.notes.trim()) throw new Error('请先在下方「本页说明文字」中写清楚本步要点，再让 AI 标注')
-      const { res, anns } = await buildAnnotate(page, page.notes)
+      const { res, anns } = await buildAnnotate(page, page.notes, signal)
       if (!anns.length)
         return `未能根据说明在「${page.name}」中识别到对应元素，可补充更具体的描述后重试`
+      signal.throwIfAborted()
       onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
       return `已按说明在「${page.name}」添加 ${res.boxes.length} 个画框、${res.points.length} 个序号（全局累计编号），请检查后微调`
     })
 
   // 批量任务：单页失败不中断，收集失败页供一键重试
-  const [failures, setFailures] = useState<{ pages: Page[]; job: 'desc' | 'ann' } | null>(null)
+  const [failures, setFailures] = useState<{ pages: Page[]; job: 'desc' | 'ann'; projectId: string } | null>(null)
 
   const runDescBatch = (targets: Page[], key: string) =>
-    run(key, async () => {
+    run(key, async signal => {
       const starts = computeNumberStarts(pages)
-      const failed: Page[] = []
-      for (let k = 0; k < targets.length; k++) {
-        const page = targets[k]
-        setStatus({ kind: 'info', text: `正在生成说明 ${k + 1}/${targets.length}：${page.name} …` })
-        try {
+      const workingNotes = new Map(pages.map(p => [p.id, p.notes]))
+      const failed = await runAIBatch({ targets, signal,
+        onProgress: (page, k) => setStatus({ kind: 'info', text: `正在生成说明 ${k + 1}/${targets.length}：${page.name} …` }),
+        onInterrupted: remaining => setFailures({ pages: remaining, job: 'desc', projectId }),
+        process: async page => {
           const i = pages.indexOf(page)
-          const prev = i > 0 ? pages[i - 1].notes : ''
-          const text = await aiGenerateDescription(
-            config,
-            await redactForAI(page),
-            i,
-            pages.length,
-            prev,
-            starts.get(page.id) ?? 0
-          )
+          const prev = i > 0 ? workingNotes.get(pages[i - 1].id) ?? '' : ''
+          const text = await aiGenerateDescription(config, await redactForAI(page, signal), i, pages.length, prev, starts.get(page.id) ?? 0, signal)
+          signal.throwIfAborted()
           onUpdatePage(page.id, { notes: text }, page)
-        } catch {
-          failed.push(page)
-        }
-      }
+          workingNotes.set(page.id, text)
+        },
+      })
       if (failed.length) {
-        setFailures({ pages: failed, job: 'desc' })
+        setFailures({ pages: failed, job: 'desc', projectId })
         return `完成 ${targets.length - failed.length}/${targets.length} 页，${failed.length} 页失败，可点击「重试失败页」`
       }
       setFailures(null)
@@ -128,20 +117,18 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
     })
 
   const runAnnBatch = (targets: Page[], key: string) =>
-    run(key, async () => {
-      const failed: Page[] = []
-      for (let k = 0; k < targets.length; k++) {
-        const page = targets[k]
-        setStatus({ kind: 'info', text: `正在按说明标注 ${k + 1}/${targets.length}：${page.name} …` })
-        try {
-          const { anns } = await buildAnnotate(page, page.notes)
+    run(key, async signal => {
+      const failed = await runAIBatch({ targets, signal,
+        onProgress: (page, k) => setStatus({ kind: 'info', text: `正在按说明标注 ${k + 1}/${targets.length}：${page.name} …` }),
+        onInterrupted: remaining => setFailures({ pages: remaining, job: 'ann', projectId }),
+        process: async page => {
+          const { anns } = await buildAnnotate(page, page.notes, signal)
+          signal.throwIfAborted()
           if (anns.length) onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
-        } catch {
-          failed.push(page)
-        }
-      }
+        },
+      })
       if (failed.length) {
-        setFailures({ pages: failed, job: 'ann' })
+        setFailures({ pages: failed, job: 'ann', projectId })
         return `完成 ${targets.length - failed.length}/${targets.length} 页，${failed.length} 页失败，可点击「重试失败页」`
       }
       setFailures(null)
@@ -153,16 +140,16 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
   const runAllAnnotate = () => runAnnBatch(pages.filter((p) => p.notes.trim()), 'ann-all')
 
   const retryFailed = () => {
-    if (!failures || busy) return
-    const f = failures
+    if (!failures || busy || failures.projectId !== projectId) return
+    const f = { ...failures, pages: pages.filter(p => failures.pages.some(old => old.id === p.id)) }
     setFailures(null)
     if (f.job === 'desc') runDescBatch(f.pages, 'retry')
     else runAnnBatch(f.pages, 'retry')
   }
 
   const genMosaics = (page: Page) =>
-    run(`mosaic-${page.id}`, async () => {
-      const regions = await aiSuggestMosaics(config, await redactForAI(page))
+    run(`mosaic-${page.id}`, async signal => {
+      const regions = await aiSuggestMosaics(config, await redactForAI(page, signal), signal)
       if (!regions.length) return `「${page.name}」未识别到需要打码的区域`
       const anns: Annotation[] = regions.map((r) => ({
         id: uid(),
@@ -172,13 +159,14 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         w: r.w * page.width,
         h: r.h * page.height,
       }))
+      signal.throwIfAborted()
       onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
       return `已在「${page.name}」添加 ${anns.length} 个打码区域，请检查后微调`
     })
 
   const genNumbers = (page: Page) =>
-    run(`num-${page.id}`, async () => {
-      const points = await aiSuggestNumbers(config, await redactForAI(page))
+    run(`num-${page.id}`, async signal => {
+      const points = await aiSuggestNumbers(config, await redactForAI(page, signal), signal)
       if (!points.length) return `「${page.name}」未识别到关键操作位置`
       const anns: Annotation[] = points.map((p) => ({
         id: uid(),
@@ -186,6 +174,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
         x: p.x * page.width,
         y: p.y * page.height,
       }))
+      signal.throwIfAborted()
       onUpdatePage(page.id, { annotations: [...page.annotations, ...anns] }, page)
       return `已在「${page.name}」添加 ${anns.length} 个序号标注，可拖动调整位置`
     })
@@ -203,6 +192,7 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
             {config.demo ? '演示' : '已连接'}
           </Badge>
         </div>
+        {busy && <Button size="sm" variant="outline" aria-label="取消 AI 任务" onClick={cancel}>取消</Button>}
         <Dialog>
           <DialogTrigger asChild>
             <Button variant="ghost" size="icon" title="API 配置">
@@ -242,12 +232,21 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
                   placeholder="moonshot-v1-8k-vision-preview"
                 />
               </div>
+              <label className="flex items-center justify-between gap-3 text-sm">
+                <span>在此设备记住 API Key</span>
+                <Switch checked={draft.keyStorage === 'local'} onCheckedChange={checked => setDraft({ ...draft, keyStorage: checked ? 'local' : 'session' })} />
+              </label>
+              <p className="text-xs text-muted-foreground">关闭时仅保留在当前标签页会话中，刷新可继续使用，关闭标签页后需重新填写。浏览器的会话恢复可能恢复会话数据；设备记住模式会以明文保存在本机浏览器中。</p>
               <Button
                 className="w-full"
                 onClick={() => {
+                  cancel()
                   const next = { ...draft, demo: !draft.apiKey }
-                  saveAIConfig(next)
-                  onConfigChange(next)
+                  try {
+                    saveAIConfig(next)
+                    onConfigChange(next)
+                    setStatus({ kind: 'ok', text: '配置已保存' })
+                  } catch { setStatus({ kind: 'err', text: '配置保存失败：浏览器存储不可用，请检查存储权限后重试' }) }
                 }}
               >
                 保存配置
@@ -381,14 +380,14 @@ export default function AIPanel({ config, onConfigChange, pages, selectedPageId,
           <p className="text-xs leading-relaxed text-muted-foreground">
             按页面顺序生成，并参考前一页的说明保持连贯。
           </p>
-          {failures && !busy && (
+          {failures && failures.projectId === projectId && !busy && (
             <Button
               className="w-full justify-start gap-2"
               variant="outline"
               onClick={retryFailed}
             >
               <RotateCcw className="h-4 w-4" />
-              重试失败页（{failures.pages.length}）：{failures.pages.map((p) => p.name).slice(0, 2).join('、')}
+              重试未完成页（{failures.pages.length}）：{failures.pages.map((p) => p.name).slice(0, 2).join('、')}
               {failures.pages.length > 2 ? ' 等' : ''}
             </Button>
           )}

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
-import { Extension } from '@tiptap/core'
+import { useLayoutEffect, useMemo, useRef } from 'react'
+import { createDocument, Extension } from '@tiptap/core'
+import { freshNotesState } from '@/lib/notes-editor-state'
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { BackgroundColor, Color, FontSize, TextStyle } from '@tiptap/extension-text-style'
@@ -29,38 +30,55 @@ const ParagraphLineHeight = Extension.create({
 })
 
 interface Props {
+  documentId: string
   notes: string
   notesRich?: string
   onChange: (notes: string, notesRich: string) => void
 }
 
-export default function StepNotesEditor({ notes, notesRich, onChange }: Props) {
+const EXTENSIONS = [
+  StarterKit.configure({ heading: false, blockquote: false, code: false, codeBlock: false, horizontalRule: false }),
+  TextStyle, Color, BackgroundColor, FontSize,
+  TextAlign.configure({ types: ['paragraph'], alignments: ['left', 'center', 'right'] }),
+  ParagraphLineHeight,
+]
+const EDITOR_PROPS = { attributes: { class: 'step-notes-content min-h-36 outline-none', 'aria-label': '步骤说明富文本编辑区' } }
+
+export default function StepNotesEditor({ documentId, notes, notesRich, onChange }: Props) {
   const sourceKey = notesRich ?? `plain:${notes}`
   const lastLocalKey = useRef(sourceKey)
-  const content = safeNotesHtml({ notes, notesRich })
+  const activeTarget = useRef({ documentId, onChange })
+  const content = useMemo(() => safeNotesHtml({ notes, notesRich }), [notes, notesRich])
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ heading: false, blockquote: false, code: false, codeBlock: false, horizontalRule: false }),
-      TextStyle, Color, BackgroundColor, FontSize,
-      TextAlign.configure({ types: ['paragraph'], alignments: ['left', 'center', 'right'] }),
-      ParagraphLineHeight,
-    ],
+    extensions: EXTENSIONS,
     content,
     immediatelyRender: false,
-    editorProps: { attributes: { class: 'step-notes-content min-h-36 outline-none', 'aria-label': '步骤说明富文本编辑区' } },
+    shouldRerenderOnTransaction: false,
+    editorProps: EDITOR_PROPS,
     onUpdate: ({ editor: current }) => {
       const html = current.getHTML()
       lastLocalKey.current = html
-      onChange(current.getText({ blockSeparator: '\n' }), html)
+      activeTarget.current.onChange(current.getText({ blockSeparator: '\n' }), html)
     },
   })
 
   // 本地输入由 Tiptap 维护光标；只在 AI 或项目加载从外部替换说明时同步。
-  useEffect(() => {
-    if (!editor || sourceKey === lastLocalKey.current) return
-    editor.commands.setContent(content, { emitUpdate: false })
-    lastLocalKey.current = sourceKey
-  }, [editor, sourceKey, content])
+  useLayoutEffect(() => {
+    if (!editor) return
+    if (documentId !== activeTarget.current.documentId) {
+      // Blur while callbacks still belong to the old step, then replace the
+      // document before paint. Reset plugin state to isolate per-step undo.
+      editor.view.dom.blur()
+      editor.view.updateState(freshNotesState(editor.state, createDocument(content, editor.schema)))
+      lastLocalKey.current = sourceKey
+      // A no-op transaction notifies toolbar subscriptions after updateState.
+      editor.commands.setMeta('addToHistory', false)
+    } else if (sourceKey !== lastLocalKey.current) {
+      editor.commands.setContent(content, { emitUpdate: false })
+      lastLocalKey.current = sourceKey
+    }
+    activeTarget.current = { documentId, onChange }
+  }, [editor, documentId, sourceKey, content, onChange])
 
   const format = useEditorState({ editor, selector: ({ editor: current }) => current ? ({
     bold: current.isActive('bold'), italic: current.isActive('italic'), underline: current.isActive('underline'),

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { idbSet, type ProjectData } from '@/lib/db'
+import { storageErrorMessage } from '@/lib/storage-errors'
 
 export function useProjectAutosave(data: ProjectData, ready: boolean, pendingText = false) {
   const [status, setStatus] = useState('')
@@ -26,7 +27,7 @@ export function useProjectAutosave(data: ProjectData, ready: boolean, pendingTex
           try { localStorage.removeItem('mbz-autosave') } catch { /* IndexedDB 已成功 */ }
         }
       } catch (err) {
-        if (active) setStatus(`保存失败：${err instanceof Error ? err.message : '点击重试或下载项目备份'}`)
+        if (active) setStatus(`保存失败：${storageErrorMessage(err)}`)
       } finally { inFlight = false }
     }
     const timer = setTimeout(save, 1000)

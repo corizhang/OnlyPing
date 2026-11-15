@@ -1,26 +1,8 @@
+import { parseAIAnnotations, parseAIMosaics, parseAINumbers, parseAIPrivacy, parseAIContent } from './ai-response.ts'
 import type { AIConfig, Page, Rect } from '@/types'
 import { cancellableDelay } from './render-task.ts'
 
-const DEFAULT_DEMO = true
-
-export function loadAIConfig(): AIConfig & { demo: boolean } {
-  try {
-    const raw = localStorage.getItem('mbz-ai-config')
-    if (raw) return { ...JSON.parse(raw), demo: false }
-  } catch {
-    /* ignore */
-  }
-  return {
-    baseUrl: 'https://api.moonshot.cn/v1',
-    apiKey: '',
-    model: 'moonshot-v1-8k-vision-preview',
-    demo: DEFAULT_DEMO,
-  }
-}
-
-export function saveAIConfig(cfg: AIConfig & { demo: boolean }) {
-  localStorage.setItem('mbz-ai-config', JSON.stringify(cfg))
-}
+export { loadAIConfig, saveAIConfig } from './ai-config.ts'
 
 interface ChatMessage {
   role: 'system' | 'user'
@@ -64,11 +46,7 @@ function chatOnce(config: AIConfig, messages: ChatMessage[], jsonMode: boolean, 
       }
       return res.json()
     })
-    .then((data) => {
-      const content = data?.choices?.[0]?.message?.content
-      if (!content) throw new Error('API 返回为空')
-      return typeof content === 'string' ? content : JSON.stringify(content)
-    })
+    .then(parseAIContent)
     .finally(() => { clearTimeout(timer); signal?.removeEventListener('abort', abort) })
 }
 
@@ -102,16 +80,6 @@ function visionUser(text: string, image: string): ChatMessage {
   }
 }
 
-function parseJSON<T>(raw: string): T {
-  const cleaned = raw.replace(/```json|```/g, '').trim()
-  const start = cleaned.indexOf('{')
-  const end = cleaned.lastIndexOf('}')
-  if (start === -1 || end === -1) throw new Error(`无法解析 AI 返回：${raw.slice(0, 120)}`)
-  return JSON.parse(cleaned.slice(start, end + 1)) as T
-}
-
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
-
 /** 生成本页说明时可携带的标注上下文（序号使用全局累计编号） */
 function annotationContext(page: Page, numberStart: number): string {
   const numbers = page.annotations.filter((a) => !a.hidden).filter((a) => a.kind === 'number')
@@ -141,8 +109,10 @@ export async function aiGenerateDescription(
   index: number,
   total: number,
   prevNotes: string,
-  numberStart = 0
+  numberStart = 0,
+  signal?: AbortSignal,
 ): Promise<string> {
+  signal?.throwIfAborted()
   if (config.demo || !config.apiKey) {
     const nums = page.annotations.filter((a) => a.kind === 'number' && !a.hidden).length
     return `（演示模式）第 ${index + 1} 步：${nums ? `按图中序号 ${numberStart + 1} 到 ${numberStart + nums} 的顺序操作，` : '在页面中找到标注位置，'}完成本步后进入下一步。配置 API Key 后，AI 将结合截图与标注生成真实说明。`
@@ -165,7 +135,7 @@ export async function aiGenerateDescription(
         },
         visionUser(text, page.image),
       ],
-      false
+      false, signal
     )
   ).trim()
 }
@@ -174,8 +144,10 @@ export async function aiGenerateDescription(
 export async function aiAnnotateFromDescription(
   config: AIConfig & { demo: boolean },
   page: Page,
-  instructions: string
+  instructions: string,
+  signal?: AbortSignal,
 ): Promise<{ boxes: Rect[]; points: { x: number; y: number }[] }> {
+  signal?.throwIfAborted()
   if (config.demo || !config.apiKey) {
     return {
       boxes: [
@@ -198,25 +170,18 @@ export async function aiAnnotateFromDescription(
       },
       visionUser(`操作说明：「${instructions}」\n请在这张截图上给出框选区域与操作点位。`, page.image),
     ],
-    true
+    true, signal
   )
-  const data = parseJSON<{
-    boxes?: { x: number; y: number; w: number; h: number }[]
-    points?: { x: number; y: number }[]
-  }>(raw)
-  const boxes = (data.boxes ?? [])
-    .map((b) => ({ x: clamp01(b.x), y: clamp01(b.y), w: clamp01(b.w), h: clamp01(b.h) }))
-    .filter((b) => b.w > 0.005 && b.h > 0.005)
-    .slice(0, 12)
-  const points = (data.points ?? []).map((p) => ({ x: clamp01(p.x), y: clamp01(p.y) })).slice(0, 12)
-  return { boxes, points }
+  return parseAIAnnotations(raw)
 }
 
 /** 识别需要打码的隐私区域，返回归一化矩形 */
 export async function aiSuggestMosaics(
   config: AIConfig & { demo: boolean },
-  page: Page
+  page: Page,
+  signal?: AbortSignal,
 ): Promise<Rect[]> {
+  signal?.throwIfAborted()
   if (config.demo || !config.apiKey) {
     return [
       { x: 0.08, y: 0.12, w: 0.5, h: 0.06 },
@@ -233,17 +198,9 @@ export async function aiSuggestMosaics(
       },
       visionUser('请识别这张截图中所有需要打码的隐私区域。', page.image),
     ],
-    true
+    true, signal
   )
-  const data = parseJSON<{ regions?: { x: number; y: number; w: number; h: number }[] }>(raw)
-  return (data.regions ?? [])
-    .map((r) => ({
-      x: clamp01(r.x),
-      y: clamp01(r.y),
-      w: clamp01(r.w),
-      h: clamp01(r.h),
-    }))
-    .filter((r) => r.w > 0.005 && r.h > 0.005)
+  return parseAIMosaics(raw)
 }
 
 /** AI 隐私扫描：找出截图中疑似需要打码但未被既有打码区域覆盖的隐私内容 */
@@ -276,27 +233,16 @@ export async function aiPrivacyScanPage(
     ],
     true, signal
   )
-  const data = parseJSON<{ issues?: { type?: string; reason?: string; region?: { x: number; y: number; w: number; h: number } }[] }>(raw)
-  return (data.issues ?? [])
-    .filter((i) => i.region)
-    .map((i) => ({
-      type: String(i.type ?? '隐私信息'),
-      reason: String(i.reason ?? ''),
-      region: {
-        x: clamp01(i.region!.x),
-        y: clamp01(i.region!.y),
-        w: clamp01(i.region!.w),
-        h: clamp01(i.region!.h),
-      },
-    }))
-    .slice(0, 10)
+  return parseAIPrivacy(raw)
 }
 
 /** 识别关键操作元素，返回归一化标注点（按操作顺序） */
 export async function aiSuggestNumbers(
   config: AIConfig & { demo: boolean },
-  page: Page
+  page: Page,
+  signal?: AbortSignal,
 ): Promise<{ x: number; y: number }[]> {
+  signal?.throwIfAborted()
   if (config.demo || !config.apiKey) {
     return [
       { x: 0.5, y: 0.42 },
@@ -314,10 +260,7 @@ export async function aiSuggestNumbers(
       },
       visionUser('请按操作顺序给出这张截图需要标注序号的关键位置。', page.image),
     ],
-    true
+    true, signal
   )
-  const data = parseJSON<{ points?: { x: number; y: number }[] }>(raw)
-  return (data.points ?? [])
-    .map((p) => ({ x: clamp01(p.x), y: clamp01(p.y) }))
-    .slice(0, 12)
+  return parseAINumbers(raw)
 }
