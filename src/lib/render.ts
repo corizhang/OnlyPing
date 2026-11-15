@@ -27,6 +27,7 @@ export function clearImageCache() { imageCache.clear() }
 
 /** 把一页（底图 + 全部标注）按原始尺寸渲染成一个画布；numberStart 为全局序号起始值 */
 export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<HTMLCanvasElement> {
+  page = { ...page, annotations: page.annotations.filter(a => !a.hidden) }
   // 所有放大镜从同一张不含放大镜的完整合成图取样，避免层级或重叠改变内容。
   const magnifierSource = page.annotations.some(a => a.kind === 'magnifier')
     ? await renderPageToCanvas({ ...page, annotations: page.annotations.filter(a => a.kind !== 'magnifier') }, numberStart)
@@ -70,7 +71,7 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
 /** 隐私模式下，把现有马赛克和标注渲染进图像后再交给 AI。 */
 export async function preparePageForAI(page: Page, privacy: boolean): Promise<Page> {
   const protectedPage = privacy ? page : { ...page, annotations: page.annotations.filter(a => a.kind === 'mosaic' || a.kind === 'redact') }
-  const canvas = await renderPageToCanvas(protectedPage)
+  const canvas = await renderPageToCanvas({ ...protectedPage, annotations: protectedPage.annotations.map(a => a.kind === 'mosaic' || a.kind === 'redact' ? { ...a, hidden: false } : a) })
   return { ...page, image: canvas.toDataURL('image/jpeg', 0.85) }
 }
 

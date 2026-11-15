@@ -1,50 +1,56 @@
 import { useEffect } from 'react'
 import type { Annotation, Page, Tool } from '@/types'
 import { uid } from '@/types'
-import { duplicateAnnotation, translateAnnotation } from '@/lib/tools/annotation-geometry'
+import { copySelection, editableSelection, moveSelection } from '@/lib/selection'
 
 interface SelectionKeyboardProps {
-  page: Page; tool: Tool; selectedId: string | null
+  page: Page; tool: Tool; selectedIds: string[]
   onChange: (annotations: Annotation[]) => void
-  onSelect: (id: string | null) => void
-  updateAnnotation: (id: string, patch: Partial<Annotation>) => void
+  onSelectionChange: (ids: string[]) => void
   onResetCrop: () => void
 }
-export function useAnnotationKeyboard({ page, tool, selectedId, onChange, onSelect, updateAnnotation, onResetCrop }: SelectionKeyboardProps) {
+export function useAnnotationKeyboard({ page, tool, selectedIds, onChange, onSelectionChange, onResetCrop }: SelectionKeyboardProps) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (e.defaultPrevented || target.closest('input,textarea,select,[role=slider],[role=separator],[role=tab],[role=menuitem]') || target.isContentEditable) return
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && tool !== 'crop') {
-        onChange(page.annotations.filter((a) => a.id !== selectedId))
-        onSelect(null)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && tool !== 'crop') {
+        e.preventDefault()
+        onSelectionChange(page.annotations.filter(a => !a.locked && !a.hidden).map(a => a.id))
+        return
       }
       if (e.key === 'Escape') {
         if (tool === 'crop') onResetCrop()
-        else onSelect(null)
+        else onSelectionChange([])
+        return
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && selectedId) {
-        const ann = page.annotations.find((a) => a.id === selectedId)
-        if (ann) {
-          e.preventDefault()
-          const copy = duplicateAnnotation(ann, uid())
-          onChange([...page.annotations, copy])
-          onSelect(copy.id)
-        }
+      if (tool === 'crop') return
+      const editable = editableSelection(page.annotations, selectedIds)
+      if (!editable.length) return
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        const ids = new Set(editable.map(a => a.id))
+        onChange(page.annotations.filter(a => !ids.has(a.id)))
+        onSelectionChange(selectedIds.filter(id => !ids.has(id)))
+        return
       }
-      if (e.key.startsWith('Arrow') && selectedId) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+        e.preventDefault()
+        const copies = copySelection(page.annotations, selectedIds, uid)
+        onChange([...page.annotations, ...copies])
+        onSelectionChange(copies.map(a => a.id))
+        return
+      }
+      if (e.key.startsWith('Arrow')) {
         const step = e.shiftKey ? 10 : 1
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
         if (!dx && !dy) return
         e.preventDefault()
-        const ann = page.annotations.find((a) => a.id === selectedId)
-        if (!ann) return
-        updateAnnotation(selectedId, translateAnnotation(ann, dx, dy))
+        onChange(moveSelection(page.annotations, selectedIds, dx, dy))
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, tool, page.annotations, onResetCrop, onChange, onSelect, updateAnnotation])
-
+  }, [selectedIds, tool, page.annotations, onResetCrop, onChange, onSelectionChange])
 }

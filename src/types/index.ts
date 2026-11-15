@@ -101,7 +101,8 @@ export interface MagnifierAnnotation extends Rect {
   zoom: number
 }
 
-export type Annotation =
+export interface AnnotationState { locked?: boolean; hidden?: boolean }
+export type Annotation = AnnotationState & (
   | BoxAnnotation
   | EllipseAnnotation
   | HighlightAnnotation
@@ -113,7 +114,7 @@ export type Annotation =
   | FreehandAnnotation
   | TextAnnotation
   | CalloutAnnotation
-  | MagnifierAnnotation
+  | MagnifierAnnotation)
 
 export interface Page {
   id: string
@@ -202,7 +203,7 @@ export function computeNumberStarts(pages: Page[]): Map<string, number> {
   let acc = 0
   for (const p of pages) {
     map.set(p.id, acc)
-    acc += p.annotations.filter((a) => a.kind === 'number').length
+    acc += p.annotations.filter((a) => a.kind === 'number' && !a.hidden).length
   }
   return map
 }

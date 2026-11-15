@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "node --test tests/*.test.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint:core": "eslint src/lib src/hooks src/components/CanvasEditor.tsx src/components/AnnotationList.tsx src/components/PageList.tsx src/components/ToolIcon.tsx src/components/AnnotationParameters.tsx src/components/StepNotesEditor.tsx src/components/PanelResizeHandle.tsx"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

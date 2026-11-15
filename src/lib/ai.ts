@@ -109,8 +109,8 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 /** 生成本页说明时可携带的标注上下文（序号使用全局累计编号） */
 function annotationContext(page: Page, numberStart: number): string {
-  const numbers = page.annotations.filter((a) => a.kind === 'number')
-  const boxes = page.annotations.filter((a) => a.kind === 'box' || a.kind === 'ellipse' || a.kind === 'highlight')
+  const numbers = page.annotations.filter((a) => !a.hidden).filter((a) => a.kind === 'number')
+  const boxes = page.annotations.filter((a) => !a.hidden && (a.kind === 'box' || a.kind === 'ellipse' || a.kind === 'highlight'))
   const parts: string[] = []
   if (numbers.length) {
     const pos = numbers
@@ -139,7 +139,7 @@ export async function aiGenerateDescription(
   numberStart = 0
 ): Promise<string> {
   if (config.demo || !config.apiKey) {
-    const nums = page.annotations.filter((a) => a.kind === 'number').length
+    const nums = page.annotations.filter((a) => a.kind === 'number' && !a.hidden).length
     return `（演示模式）第 ${index + 1} 步：${nums ? `按图中序号 ${numberStart + 1} 到 ${numberStart + nums} 的顺序操作，` : '在页面中找到标注位置，'}完成本步后进入下一步。配置 API Key 后，AI 将结合截图与标注生成真实说明。`
   }
   const text = [

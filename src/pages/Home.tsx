@@ -1,3 +1,5 @@
+import AnnotationList from '@/components/AnnotationList'
+import { copySelection, editableSelection } from '@/lib/selection'
 import AnnotationParameters from '@/components/AnnotationParameters'
 import { cropAnnotation, duplicateAnnotation } from '@/lib/tools/annotation-geometry'
 import { TOOL_DEFINITIONS, TOOL_CATALOG, TOOL_PARAMETERS, annotationLabel } from '@/lib/tools/catalog'
@@ -5,7 +7,7 @@ import ToolIcon from '@/components/ToolIcon'
 import { TOOL_SHORTCUTS, DEFAULT_TOOL_ORDER } from '@/lib/tools'
 import { EditHistory } from '@/lib/history'
 import PanelResizeHandle from '@/components/PanelResizeHandle'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   PanelRight,
   Keyboard,
@@ -137,7 +139,9 @@ export default function Home() {
   const [presetName, setPresetName] = useState('')
   const color = annStyle.color
   const setColor = (c: string) => setAnnStyle((s) => ({ ...s, color: c }))
-  const [selectedAnnId, setSelectedAnnId] = useState<string | null>(null)
+  const [selectedAnnIds, setSelectedAnnIds] = useState<string[]>([])
+  const selectedAnnId = selectedAnnIds.at(-1) ?? null
+  const setSelectedAnnId = useCallback((id: string | null) => setSelectedAnnIds(id ? [id] : []), [])
   const [editTextRequest, setEditTextRequest] = useState(0)
   const [aiConfig, setAIConfig] = useState(loadAIConfig())
   const [exporting, setExporting] = useState(false)
@@ -328,6 +332,7 @@ export default function Home() {
       setAiScanProgress(`正在扫描 ${i + 1}/${pages.length} 页…`)
       try {
         const mosaics = p.annotations
+          .filter(a => !a.hidden)
           .filter((a) => a.kind === 'mosaic' || a.kind === 'redact')
           .map((a) => ({ x: a.x / p.width, y: a.y / p.height, w: a.w / p.width, h: a.h / p.height }))
         const pageForAI = await preparePageForAI(p, privacyMode)
@@ -380,6 +385,7 @@ export default function Home() {
       prev.map((p) => ({
         ...p,
         annotations: p.annotations.map((a) => {
+          if (a.locked) return a
           if (a.kind === 'box' || a.kind === 'ellipse' || a.kind === 'highlight' || a.kind === 'line' || a.kind === 'freehand' || a.kind === 'callout') return { ...a, color: annStyle.color }
           if (a.kind === 'text') return { ...a, color: annStyle.color, size: annStyle.textSize }
           if (a.kind === 'number') return { ...a, r: annStyle.numberR }
@@ -491,14 +497,19 @@ export default function Home() {
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
   const numberStarts = computeNumberStarts(pages)
-  const selectedAnn = selectedPage?.annotations.find((a) => a.id === selectedAnnId) ?? null
+  const selectedAnnotations = selectedPage?.annotations.filter(a => selectedAnnIds.includes(a.id)) ?? []
+  const selectedAnn = selectedAnnotations.length === 1 && !selectedAnnotations[0].locked && !selectedAnnotations[0].hidden ? selectedAnnotations[0] : null
+  const editableAnnotations = editableSelection(selectedPage?.annotations ?? [], selectedAnnIds)
   const selectedAnnName = selectedAnn?.kind === 'number'
-    ? `序号 ${(numberStarts.get(selectedPage?.id ?? '') ?? 0) + (selectedPage?.annotations.filter(a => a.kind === 'number').findIndex(a => a.id === selectedAnn.id) ?? -1) + 1}`
+    ? `序号 ${(numberStarts.get(selectedPage?.id ?? '') ?? 0) + (selectedPage?.annotations.filter(a => a.kind === 'number' && !a.hidden).findIndex(a => a.id === selectedAnn.id) ?? -1) + 1}`
     : selectedAnn?.kind === 'text' && selectedAnn.background
       ? '文字框'
       : selectedAnn ? annotationLabel(selectedAnn) : ''
   const canvasStatus = tool === 'crop'
     ? '拖动选区或边缘手柄调整裁剪范围；在选区外拖拽可重新框选，Esc 重置选区'
+    : selectedAnnotations.length > 1 ? `已选择 ${selectedAnnotations.length} 个标注，拖动或方向键批量移动；Shift 点击添加/移除`
+    : selectedAnnotations[0]?.locked ? '已选中锁定标注，请从标注对象列表解锁后编辑'
+    : selectedAnnotations[0]?.hidden ? '已选中隐藏标注，请从标注对象列表显示后编辑'
     : selectedAnn
       ? `已选中${selectedAnnName}，可拖动位置或调整大小，Ctrl+D 复制，Delete 删除`
       : '空格 + 拖动平移'
@@ -521,7 +532,7 @@ export default function Home() {
     if (!selectedPage || !selectedAnnId) return
     updatePage(selectedPage.id, {
       annotations: selectedPage.annotations.map((a) =>
-        a.id === selectedAnnId ? ({ ...a, ...patch } as typeof a) : a
+        a.id === selectedAnnId && !a.locked ? ({ ...a, ...patch } as typeof a) : a
       ),
     })
   }
@@ -1133,6 +1144,13 @@ export default function Home() {
                 <Type className="size-4" />
               </Button>
             )}
+            {selectedAnnotations.length > 1 && selectedPage && <div className="flex shrink-0 items-center gap-1 border-l border-white/10 pl-2 text-xs text-[#ccc]">
+              <span>已选 {selectedAnnotations.length} 项</span>
+              <Button variant="ghost" size="icon-sm" aria-label="批量复制标注" disabled={!editableAnnotations.length} onClick={() => { const copies = copySelection(selectedPage.annotations, selectedAnnIds, uid); updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, ...copies] }); setSelectedAnnIds(copies.map(a => a.id)) }}><Copy className="size-4" /></Button>
+              <Button variant="ghost" size="icon-sm" aria-label="批量删除标注" disabled={!editableAnnotations.length} onClick={() => { const ids = new Set(editableAnnotations.map(a => a.id)); updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => !ids.has(a.id)) }); setSelectedAnnId(null) }}><Trash2 className="size-4" /></Button>
+              <Button variant="ghost" size="sm" onClick={() => updatePage(selectedPage.id, { annotations: selectedPage.annotations.map(a => selectedAnnIds.includes(a.id) ? { ...a, locked: true } : a) })}>锁定</Button>
+              <Button variant="ghost" size="sm" onClick={() => updatePage(selectedPage.id, { annotations: selectedPage.annotations.map(a => selectedAnnIds.includes(a.id) ? { ...a, locked: false } : a) })}>解锁</Button>
+            </div>}
             {selectedAnn && selectedPage && <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 pl-2">
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="复制标注" title="复制标注" onClick={() => { const copy = duplicateAnnotation(selectedAnn, uid(), 12); updatePage(selectedPage.id, { annotations: [...selectedPage.annotations, copy] }); setSelectedAnnId(copy.id) }}><Copy className="size-4" /></Button>
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white" aria-label="标注置顶" title="标注置顶" onClick={() => updatePage(selectedPage.id, { annotations: [...selectedPage.annotations.filter(a => a.id !== selectedAnn.id), selectedAnn] })}><ArrowUpToLine className="size-4" /></Button>
@@ -1225,6 +1243,8 @@ export default function Home() {
                 textSize={annStyle.textSize}
                 strokeWidth={annStyle.strokeWidth}
                 selectedId={selectedAnnId}
+                selectedIds={selectedAnnIds}
+                onSelectionChange={setSelectedAnnIds}
                 editTextRequest={editTextRequest}
                 onTextEditingChange={setPendingText}
                 onSelect={setSelectedAnnId}
@@ -1299,6 +1319,7 @@ export default function Home() {
           <div className={`${inspector === 'steps' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col overflow-hidden`}>
             <div className="min-h-[120px] shrink-0 overflow-hidden" style={{ height: `${stepListHeight}%`, maxHeight: 'calc(100% - 210px)' }}>
               <PageList
+          key={projectId}
           pages={pages}
           selectedId={selectedPageId}
           onImportFiles={importFiles}
@@ -1320,6 +1341,7 @@ export default function Home() {
           onDuplicate={(id) => { const source = pages.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }}
               />
             </div>
+            {selectedPage && <AnnotationList key={selectedPage.id} numberStart={numberStarts.get(selectedPage.id) ?? 0} annotations={selectedPage.annotations} selectedIds={selectedAnnIds} onSelectionChange={setSelectedAnnIds} onChange={annotations => updatePage(selectedPage.id, { annotations })} />}
             <div role="separator" aria-label="调整步骤列表高度" aria-orientation="horizontal" tabIndex={0}
               className="h-2 shrink-0 cursor-row-resize border-y border-white/10 bg-[#303030] hover:bg-[#4b80ad] focus-visible:bg-[#4b80ad] focus-visible:outline-none"
               onPointerDown={e => { resizingStepList.current = true; e.currentTarget.setPointerCapture(e.pointerId) }}
@@ -1371,7 +1393,7 @@ export default function Home() {
         </aside>
       </div>
       <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}><DialogContent className="max-h-[80vh] overflow-auto"><DialogHeader><DialogTitle>本地项目与历史版本</DialogTitle><DialogDescription>保存在当前浏览器；清除网站数据会删除这些存档，请定期下载项目备份。每个项目保留最近 3 个不同版本。</DialogDescription></DialogHeader><div className="space-y-2">{localProjects.length === 0 && <p>暂无本地项目</p>}{localProjects.map(entry => <button type="button" key={`${entry.key}:${entry.revision ?? 'latest'}`} onClick={() => void restoreLocal(entry)} className="flex w-full items-center justify-between rounded border p-3 text-left hover:bg-muted"><span className="min-w-0"><span className="block truncate text-sm">{entry.title}</span><span className="text-xs text-muted-foreground">{entry.pages} 个步骤 · {new Date(entry.savedAt).toLocaleString()}</span></span><span className="ml-2 shrink-0 text-xs">{entry.revision === undefined ? '打开项目' : '恢复此版本'}</span></button>)}</div></DialogContent></Dialog>
-      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{orderedTools.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
+      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{orderedTools.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Shift 点击多选 · Ctrl+A 选择可编辑标注 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
       <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会保存当前项目，可从本地项目列表重新打开。建议定期下载项目备份。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
       <ExportPreview
         title={title}

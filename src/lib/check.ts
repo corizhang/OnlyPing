@@ -51,16 +51,19 @@ export function runConsistencyChecks(
   pages.forEach((p, i) => {
     const at = { pageId: p.id, pageName: p.name }
     const step = `第 ${i + 1} 页「${p.name}」`
+    if (p.annotations.some(a => a.hidden && (a.kind === 'mosaic' || a.kind === 'redact'))) {
+      issues.push({ severity: 'warn', category: '隐私', ...at, message: `${step}有隐藏的打码或遮挡，导出不包含这些保护，请确认后显示它们。` })
+    }
 
     if (!p.notes.trim()) {
       issues.push({ severity: 'warn', category: '说明', ...at, message: `${step}缺少说明文字，导出后该步骤没有操作指引。` })
     }
 
-    if (p.annotations.length === 0) {
+    if (!p.annotations.some(a => !a.hidden)) {
       issues.push({ severity: 'info', category: '标注', ...at, message: `${step}没有任何标注，确认是否漏标。` })
     }
 
-    const nums = p.annotations.filter((a) => a.kind === 'number').length
+    const nums = p.annotations.filter((a) => a.kind === 'number' && !a.hidden).length
     if (nums > 12) {
       issues.push({
         severity: 'info',

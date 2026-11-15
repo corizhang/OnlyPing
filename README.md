@@ -1,73 +1,54 @@
-# React + TypeScript + Vite
+# OnlyPing
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+面向截图操作指引的本地网页工具：整理多张步骤图片、标注操作位置、编写富文本说明，导出单页 PNG、拼接长图、PDF 和 Word。
 
-Currently, two official plugins are available:
+## 本地运行
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+开发和测试使用 Node.js 24、npm。
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+默认访问 http://localhost:3000 。浏览器数据按协议、主机和端口隔离，请固定使用同一个地址；切换到其他端口不会看到原来的本地项目。
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm test
+npm run lint:core
+npm run build
+npm run preview
 ```
+
+生产构建位于 `dist/`，通过静态 Web 服务部署。`npm run dev` 仅用于开发；实际交付前仍需在目标浏览器验证导出和项目容量。
+
+## 常用操作
+
+- 从步骤列表添加、粘贴或拖入图片；搜索步骤名称/说明，筛选缺说明或未标注步骤。筛选时暂不排序。
+- 左侧选择工具，顶部设置参数；文字点击创建，气泡拖动创建，双击已有文字标注重新编辑。
+- Shift 点击画布或对象列表进行多选，Ctrl+A 选择可编辑对象；拖动和方向键可批量移动，Shift+方向键移动 10px。
+- Ctrl+D 批量复制，Delete 删除；Ctrl+Z 撤销，Ctrl+Shift+Z / Ctrl+Y 重做。输入文字时保留文本快捷键。
+- 展开右侧“标注对象”可锁定/解锁及显示/隐藏。锁定对象保留在导出中，隐藏对象不参与导出；隐藏序号不计入连续编号。
+- 文字编辑中 Enter 换行，Ctrl+Enter 提交，Esc 取消。结束编辑后才将文本草稿写入项目。
+
+## 项目保存与恢复
+
+当前浏览器通过 IndexedDB 自动保存项目。顶部显示待保存、保存中、成功或失败；失败提示可点击重试。
+
+“项目 → 本地项目与历史版本”可重新打开项目，或恢复最近 3 个不同版本。新建/切换前会保存当前工作区；多个页面发生冲突时阻止旧内容覆盖，并在切换时尝试保存冲突副本。
+
+请定期下载 JSON 项目备份。清除网站数据、浏览器隐私模式或更换浏览器后，本地记录可能不可用。JSON 备份内嵌图片，可跨电脑导入；导入文件会创建独立本地项目。
+
+图片独立去重存储。导入最多同时处理两张，单图上限为 4000 万像素；该限制不代表项目总体容量保证，长项目需要结合本机内存验证。
+
+## AI 辅助
+
+可配置兼容接口生成说明、建议标注和隐私检查，也可使用演示模式。真实调用会向所配置服务发送处理后的截图；已有隐私遮挡会在发送前应用，包括界面中隐藏的遮挡对象。自动检查不能保证发现全部敏感信息。
+
+API Key 当前保存在本地浏览器，请使用受信任设备，并在截图发送前确认内容和目标服务。
+
+## 开发维护
+
+工具入口见 `src/lib/tools/catalog.ts`，几何规则见 `annotation-geometry.ts`，新增工具步骤与实施边界见 [STABILITY.md](STABILITY.md)。
+
+CI 执行核心模块 ESLint、回归测试与生产构建；`npm run lint` 仍用于查看全项目检查，模板 UI 文件等历史问题尚未全部清理。当前测试以数据、几何和渲染调用为主，尚不能替代跨浏览器视觉和大量图片压力测试。

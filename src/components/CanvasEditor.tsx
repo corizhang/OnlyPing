@@ -1,3 +1,4 @@
+import { toggleSelection, editableSelection } from '@/lib/selection'
 import { useAnnotationKeyboard } from '@/hooks/use-annotation-keyboard'
 import { HANDLES, HANDLE_CURSOR, handlePos, clamp, resizeRect, type ResizeHandle } from '@/lib/tools/canvas-geometry'
 import { translateAnnotation } from '@/lib/tools/annotation-geometry'
@@ -32,6 +33,8 @@ interface Props {
   textSize: number
   strokeWidth: number
   selectedId: string | null
+  selectedIds: string[]
+  onSelectionChange: (ids: string[]) => void
   editTextRequest?: number
   onTextEditingChange?: (editing: boolean) => void
   onSelect: (id: string | null) => void
@@ -43,7 +46,7 @@ interface Props {
 type DragState =
   | { mode: 'create'; startX: number; startY: number; id: string }
   | { mode: 'freehand'; id: string }
-  | { mode: 'move'; id: string; startX: number; startY: number; snapshot: Annotation }
+  | { mode: 'move'; id: string; startX: number; startY: number; snapshot: Annotation[] }
   | { mode: 'resize'; id: string; handle: ResizeHandle; snapshot: Rect }
   | { mode: 'arrow-end'; id: string; end: 'p1' | 'p2' }
   | { mode: 'crop-handle'; handle: ResizeHandle; snapshot: Rect }
@@ -72,7 +75,7 @@ function ResizeHandles({ r, stroke, handleR, onDown }: { r: Rect; stroke: string
   }</>
 }
 
-export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, editTextRequest, onTextEditingChange, onSelect, onChange, onZoomChange, onCrop }: Props) {
+export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, selectedIds, onSelectionChange, editTextRequest, onTextEditingChange, onSelect, onChange, onZoomChange, onCrop }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
   const baseImageRef = useRef<HTMLImageElement | null>(null)
@@ -120,16 +123,16 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
 
   // 底图只在图片或尺寸变化时载入，避免拖动普通标注时反复清空并重绘图片。
   const mosaics = page.annotations.filter(
-    (ann): ann is Extract<Annotation, { kind: 'mosaic' }> => ann.kind === 'mosaic'
+    (ann): ann is Extract<Annotation, { kind: 'mosaic' }> => ann.kind === 'mosaic' && !ann.hidden
   )
   const redacts = page.annotations.filter(
-    (ann): ann is Extract<Annotation, { kind: 'redact' }> => ann.kind === 'redact'
+    (ann): ann is Extract<Annotation, { kind: 'redact' }> => ann.kind === 'redact' && !ann.hidden
   )
   useEffect(() => {
     mosaicsRef.current = mosaics
     redactsRef.current = redacts
   }, [mosaics, redacts])
-  const hasMagnifier = page.annotations.some((ann) => ann.kind === 'magnifier')
+  const hasMagnifier = page.annotations.some((ann) => ann.kind === 'magnifier' && !ann.hidden)
   const mosaicKey = [...mosaics, ...redacts]
     .map((ann) => `${ann.id}:${ann.x}:${ann.y}:${ann.w}:${ann.h}:${ann.kind === 'mosaic' ? ann.tile ?? MOSAIC_DEFAULT_TILE : ann.color}`)
     .join('|')
@@ -207,6 +210,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     (x: number, y: number): Annotation | null => {
       const list = [...page.annotations].reverse()
       for (const ann of list) {
+        if (ann.hidden || ann.locked) continue
         if (isMarkAnnotation(ann)) {
           if (hitMark(ann, x, y)) return ann
         } else if (isContentAnnotation(ann)) {
@@ -222,7 +226,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
 
   const updateAnnotation = useCallback(
     (id: string, patch: Partial<Annotation>) => {
-      onChange(page.annotations.map((a) => (a.id === id ? ({ ...a, ...patch } as Annotation) : a)))
+      onChange(page.annotations.map((a) => (a.id === id && !a.locked ? ({ ...a, ...patch } as Annotation) : a)))
     },
     [page.annotations, onChange]
   )
@@ -280,10 +284,12 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     if (tool === 'select') {
       const hit = hitTest(x, y)
       if (hit) {
-        onSelect(hit.id)
-        dragRef.current = { mode: 'move', id: hit.id, startX: x, startY: y, snapshot: hit }
-      } else {
-        onSelect(null)
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey
+        const ids = additive ? toggleSelection(selectedIds, hit.id, true) : selectedIds.includes(hit.id) ? selectedIds : [hit.id]
+        onSelectionChange(ids)
+        if (!additive) dragRef.current = { mode: 'move', id: hit.id, startX: x, startY: y, snapshot: editableSelection(page.annotations, ids) }
+      } else if (!e.shiftKey) {
+        onSelectionChange([])
       }
       return
     }
@@ -372,8 +378,8 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
         h: clamp(Math.abs(y - drag.startY), 0, bounds.h - ry),
       })
     } else if (drag.mode === 'move') {
-      const moved = translateAnnotation(drag.snapshot, x - drag.startX, y - drag.startY)
-      updateAnnotation(drag.id, moved)
+      const moved = new Map(drag.snapshot.map(a => [a.id, translateAnnotation(a, x - drag.startX, y - drag.startY)]))
+      onChange(page.annotations.map(a => a.locked || a.hidden ? a : moved.get(a.id) ?? a))
     }
   }
 
@@ -405,9 +411,9 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     dragRef.current = { mode: 'resize', id: ann.id, handle, snapshot: { x: ann.x, y: ann.y, w: ann.w, h: ann.h } }
   }
 
-  useAnnotationKeyboard({ page, tool, selectedId, onChange, onSelect, updateAnnotation, onResetCrop: () => setCropRect({ x: 0, y: 0, w: page.width, h: page.height }) })
+  useAnnotationKeyboard({ page, tool, selectedIds, onChange, onSelectionChange, onResetCrop: () => setCropRect({ x: 0, y: 0, w: page.width, h: page.height }) })
 
-  const numbers = page.annotations.filter((a) => a.kind === 'number')
+  const numbers = page.annotations.filter((a) => a.kind === 'number' && !a.hidden)
   const numOf = new Map(numbers.map((n, i) => [n.id, i + 1]))
   const handleR = 7 / scale
 
@@ -461,10 +467,10 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
             fill="transparent"
             pointerEvents="all"
           />
-          {page.annotations.map((original) => {
+          {page.annotations.filter(a => !a.hidden).map((original) => {
             const layout = original.kind === 'callout' ? calloutLayout({ ...original, text: editingTextId === original.id ? textDraft : original.text }) : null
             const ann = original.kind === 'callout' && layout ? { ...original, w: layout.w, h: layout.h } : original
-            const isSel = ann.id === selectedId
+            const isSel = selectedIds.includes(ann.id) && !ann.locked
             if (isAreaAnnotation(ann)) {
               return (
                 <g key={ann.id}>
@@ -472,7 +478,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
                   {isSel && ann.kind !== 'mosaic' && (
                     <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
                   )}
-                  {isSel && <ResizeHandles r={ann} stroke="#2563eb" handleR={handleR} onDown={(e, h) => startResize(e, ann, h)} />}
+                  {isSel && selectedIds.length === 1 && <ResizeHandles r={ann} stroke="#2563eb" handleR={handleR} onDown={(e, h) => startResize(e, ann, h)} />}
                 </g>
               )
             }
@@ -481,6 +487,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
                 <g key={ann.id}>
                   {<MarkView annotation={ann} selected={isSel} label={numberStart + (numOf.get(ann.id) ?? 1)} handleR={handleR}
                     onEndpointDown={(event, end) => {
+                      if (selectedIds.length !== 1 || ann.locked) return
                       event.stopPropagation()
                       event.currentTarget.setPointerCapture(event.pointerId)
                       dragRef.current = { mode: 'arrow-end', id: ann.id, end }
@@ -501,7 +508,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
                   {isSel && ann.kind === 'callout' && (
                     <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
                   )}
-                  {isSel && ann.kind !== 'text' && <ResizeHandles r={ann} stroke="#2563eb" handleR={handleR} onDown={(e, h) => startResize(e, ann, h)} />}
+                  {isSel && selectedIds.length === 1 && ann.kind !== 'text' && <ResizeHandles r={ann} stroke="#2563eb" handleR={handleR} onDown={(e, h) => startResize(e, ann, h)} />}
                 </g>
               )
             }

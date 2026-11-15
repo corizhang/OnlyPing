@@ -80,3 +80,12 @@ test('a stale browser tab cannot overwrite newer project changes', async () => {
   await assert.rejects(otherTab.idbSet(project('conflict', '旧页面修改', 3)), /其他页面修改/)
   assert.equal((await idbGet('project:conflict')).title, '新的修改')
 })
+
+test('locked and hidden flags survive project validation and storage', async () => {
+  const data = project('flags', '标注状态')
+  data.pages[0].annotations = [{ id: 'box', kind: 'box', x: 0, y: 0, w: 20, h: 20, color: '#ff0000', locked: true, hidden: true }]
+  await idbSet(data)
+  const restored = await idbGet('project:flags')
+  assert.equal(restored.pages[0].annotations[0].locked, true)
+  assert.equal(restored.pages[0].annotations[0].hidden, true)
+})

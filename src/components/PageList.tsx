@@ -1,4 +1,5 @@
-import { useRef } from 'react'
+import { matchesStep, type StepFilter } from '@/lib/selection'
+import { useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Copy, GripVertical, ImagePlus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Page } from '@/types'
@@ -15,6 +16,9 @@ interface Props {
 }
 
 export default function PageList({ pages, selectedId, onSelect, onImportFiles, onMove, onRemove, onDuplicate, onReorder }: Props) {
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<StepFilter>('all')
+  const visiblePages = pages.map((page, index) => ({ page, index })).filter(({ page }) => matchesStep(page, query, filter))
   const fileRef = useRef<HTMLInputElement>(null)
   const selectedIndex = pages.findIndex((page) => page.id === selectedId)
   const selectedPage = pages[selectedIndex]
@@ -35,9 +39,14 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
         <span className="text-[10px] text-[#929292]">拖动排序</span>
       </div>
 
+      <div className="flex shrink-0 gap-1 border-b border-white/10 px-2 py-2">
+        <input type="search" aria-label="搜索步骤" placeholder="搜索名称或说明" value={query} onChange={e => setQuery(e.target.value)} className="h-7 min-w-0 flex-1 rounded-sm border border-white/15 bg-[#303030] px-2 text-xs outline-none focus:border-[#6d9fc7]" />
+        <select aria-label="筛选步骤" value={filter} onChange={e => setFilter(e.target.value as StepFilter)} className="h-7 w-20 rounded-sm border border-white/15 bg-[#303030] text-xs"><option value="all">全部</option><option value="missing-notes">缺少说明</option><option value="unannotated">未标注</option></select>
+      </div>
       <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => handleFiles(event.target.files)} />
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1" role="list" aria-label="项目步骤">
+        {pages.length > 0 && visiblePages.length === 0 && <p className="px-3 py-5 text-xs text-[#aaa]">没有匹配的步骤，请调整搜索或筛选。</p>}
         {pages.length === 0 && (
           <div className="mx-3 mt-3 border border-dashed border-white/15 px-3 py-7 text-center">
             <ImagePlus className="mx-auto size-5 text-[#979797]" />
@@ -45,11 +54,11 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
             <p className="mt-1 text-[11px] text-[#a5a5a5]">添加截图后即可开始标注</p>
           </div>
         )}
-        {pages.map((page, index) => (
+        {visiblePages.map(({ page, index }) => (
           <div
             key={page.id}
             role="listitem"
-            draggable
+            draggable={!query.trim() && filter === 'all'}
             onDragStart={(event) => { event.dataTransfer.setData('application/x-onlyping-step', page.id); event.dataTransfer.effectAllowed = 'move' }}
             onDragOver={(event) => { if (event.dataTransfer.types.includes('application/x-onlyping-step')) event.preventDefault() }}
             onDrop={(event) => { const source = event.dataTransfer.getData('application/x-onlyping-step'); if (!source) return; event.preventDefault(); event.stopPropagation(); onReorder(source, page.id) }}
@@ -83,8 +92,8 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
           <ImagePlus className="size-4" />添加
         </Button>
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon-sm" className="text-[#bcbcbc] hover:bg-white/10 hover:text-white" disabled={selectedIndex <= 0} onClick={() => selectedPage && onMove(selectedPage.id, -1)} title="上移步骤" aria-label="上移步骤"><ArrowUp className="size-4" /></Button>
-          <Button variant="ghost" size="icon-sm" className="text-[#bcbcbc] hover:bg-white/10 hover:text-white" disabled={selectedIndex < 0 || selectedIndex === pages.length - 1} onClick={() => selectedPage && onMove(selectedPage.id, 1)} title="下移步骤" aria-label="下移步骤"><ArrowDown className="size-4" /></Button>
+          <Button variant="ghost" size="icon-sm" className="text-[#bcbcbc] hover:bg-white/10 hover:text-white" disabled={selectedIndex <= 0 || !!query.trim() || filter !== 'all'} onClick={() => selectedPage && onMove(selectedPage.id, -1)} title="上移步骤" aria-label="上移步骤"><ArrowUp className="size-4" /></Button>
+          <Button variant="ghost" size="icon-sm" className="text-[#bcbcbc] hover:bg-white/10 hover:text-white" disabled={selectedIndex < 0 || selectedIndex === pages.length - 1 || !!query.trim() || filter !== 'all'} onClick={() => selectedPage && onMove(selectedPage.id, 1)} title="下移步骤" aria-label="下移步骤"><ArrowDown className="size-4" /></Button>
           <Button variant="ghost" size="icon-sm" className="text-[#bcbcbc] hover:bg-white/10 hover:text-white" disabled={!selectedPage} onClick={() => selectedPage && onDuplicate(selectedPage.id)} title="复制步骤" aria-label="复制步骤"><Copy className="size-4" /></Button>
           <Button variant="ghost" size="icon-sm" className="text-[#bcbcbc] hover:bg-red-500/15 hover:text-red-300" disabled={!selectedPage} onClick={() => selectedPage && onRemove(selectedPage.id)} title="删除步骤" aria-label="删除步骤"><Trash2 className="size-4" /></Button>
         </div>
