@@ -20,6 +20,7 @@ import type { AIConfig, Annotation, Page } from '@/types'
 import { uid, computeNumberStarts } from '@/types'
 import { aiAnnotateFromDescription, aiGenerateDescription, aiSuggestMosaics, aiSuggestNumbers, saveAIConfig } from '@/lib/ai'
 import { preparePageForAI } from '@/lib/render'
+import { isDesktop } from '@/lib/files'
 
 interface Props {
   projectId: string
@@ -33,6 +34,7 @@ interface Props {
 export default function AIPanel({ projectId, config, onConfigChange, pages, selectedPageId, onUpdatePage }: Props) {
   const { busy, status, setStatus, run, cancel } = useAITask(projectId)
   const [draft, setDraft] = useState(config)
+  const [savingConfig, setSavingConfig] = useState(false)
   const [privacy, setPrivacy] = useState(() => localStorage.getItem('mbz-privacy') !== '0')
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
@@ -193,7 +195,7 @@ export default function AIPanel({ projectId, config, onConfigChange, pages, sele
           </Badge>
         </div>
         {busy && <Button size="sm" variant="outline" aria-label="取消 AI 任务" onClick={cancel}>取消</Button>}
-        <Dialog>
+        <Dialog onOpenChange={open => { if (open) setDraft(config) }}>
           <DialogTrigger asChild>
             <Button variant="ghost" size="icon" title="API 配置">
               <Settings className="h-4 w-4" />
@@ -236,20 +238,23 @@ export default function AIPanel({ projectId, config, onConfigChange, pages, sele
                 <span>在此设备记住 API Key</span>
                 <Switch checked={draft.keyStorage === 'local'} onCheckedChange={checked => setDraft({ ...draft, keyStorage: checked ? 'local' : 'session' })} />
               </label>
-              <p className="text-xs text-muted-foreground">关闭时仅保留在当前标签页会话中，刷新可继续使用，关闭标签页后需重新填写。浏览器的会话恢复可能恢复会话数据；设备记住模式会以明文保存在本机浏览器中。</p>
+              <p className="text-xs text-muted-foreground">{isDesktop() ? '开启后保存在 Windows 凭据管理器中；关闭时仅在本次应用运行期间保留，重启后需重新填写。清空 Key 并保存可移除已记住的密钥。' : '关闭时仅保留在当前标签页会话中，刷新可继续使用，关闭标签页后需重新填写。浏览器的会话恢复可能恢复会话数据；设备记住模式会以明文保存在本机浏览器中。'}</p>
               <Button
                 className="w-full"
-                onClick={() => {
+                disabled={savingConfig}
+                onClick={async () => {
                   cancel()
                   const next = { ...draft, demo: !draft.apiKey }
+                  setSavingConfig(true)
                   try {
-                    saveAIConfig(next)
+                    await saveAIConfig(next)
                     onConfigChange(next)
                     setStatus({ kind: 'ok', text: '配置已保存' })
-                  } catch { setStatus({ kind: 'err', text: '配置保存失败：浏览器存储不可用，请检查存储权限后重试' }) }
+                  } catch { setStatus({ kind: 'err', text: '配置保存失败，请检查本机存储后重试；未启用新配置，也未改用明文保存' }) }
+                  finally { setSavingConfig(false) }
                 }}
               >
-                保存配置
+                {savingConfig ? '正在保存…' : '保存配置'}
               </Button>
               {config.demo && (
                 <p className="text-xs text-amber-600">

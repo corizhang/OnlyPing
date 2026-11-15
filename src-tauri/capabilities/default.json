@@ -6,6 +6,8 @@
     "main"
   ],
   "permissions": [
+    "allow-read-ai-key",
+    "allow-write-ai-key",
     "core:default",
     "core:window:allow-destroy",
     "dialog:allow-open",

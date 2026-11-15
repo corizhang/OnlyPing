@@ -5,6 +5,11 @@ export const isDesktop = () => typeof window !== 'undefined' && isTauri()
 let native: Promise<ReturnType<typeof createNativeFiles>> | null = null
 let active = 0
 export const hasActiveFileOperation = () => active > 0
+/** Include settings writes in the desktop close guard. */
+export async function withNativeOperation<T>(task: () => Promise<T>): Promise<T> {
+  active++
+  try { return await task() } finally { active-- }
+}
 async function nativeFiles() {
   if (!native) native = Promise.all([import('@tauri-apps/plugin-dialog'), import('@tauri-apps/plugin-fs')])
     .then(([dialog, fs]) => createNativeFiles({ save: dialog.save, open: dialog.open, readFile: fs.readFile, writeFile: fs.writeFile }))

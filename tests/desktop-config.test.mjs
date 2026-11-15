@@ -18,6 +18,8 @@ test('desktop filesystem commands are limited to the local main window with no g
   const capability = JSON.parse(read('src-tauri/capabilities/default.json'))
   assert.deepEqual(capability.windows, ['main'])
   assert.ok(!capability.remote)
+  assert.ok(capability.permissions.includes('allow-read-ai-key'))
+  assert.ok(capability.permissions.includes('allow-write-ai-key'))
   assert.deepEqual(capability.permissions.filter(p => typeof p === 'string' && p.startsWith('fs:')).sort(), ['fs:allow-read-file', 'fs:allow-write-file'])
   assert.ok(!capability.permissions.some(p => typeof p === 'object' && (p.allow || p.identifier?.startsWith('fs:'))), 'user-picked paths, not a blanket filesystem scope')
 })

@@ -28,3 +28,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: npm run desktop:build -- --debug --no-bundle
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib

@@ -1,4 +1,4 @@
-# OnlyPing 桌面端：第一阶段
+# OnlyPing 桌面端
 
 当前使用同一套 React/Vite 编辑器，同时提供 Web 和 Tauri Windows 桌面入口。正式桌面程序内嵌 `dist`，无需启动 Node/Vite 服务；真实 AI 调用仍需要网络和用户自己的接口配置。
 
@@ -42,7 +42,7 @@ Windows release 程序位于 `src-tauri/target/release/onlyping.exe`，NSIS 安�
 - 应用标识固定为 `io.github.corizhang.onlyping`。后续更改标识或数据目录必须设计迁移。
 - 自动保存目前仍写入应用内部存档，并不自动覆盖打开的 JSON 文件。JSON 保存是可迁移备份。
 - 图片仍内嵌在项目数据中。SQLite、本地图片资源目录与项目文件关联留待下一阶段。
-- AI Key 当前继续使用原有会话/设备存储；尚未接入系统安全存储。AI 跨域请求也需在真实桌面环境验证。
+- Windows 桌面的“记住 API Key”使用系统凭据管理器；关闭记住时仅保留在应用内存中。Web 继续使用原有会话/设备存储。AI 跨域请求仍需在真实桌面环境验证。
 - macOS/Linux 构建、原生截图、全局快捷键、剪贴板插件、自动更新和签名尚未完成。
 
 ## 验证边界
@@ -50,3 +50,15 @@ Windows release 程序位于 `src-tauri/target/release/onlyping.exe`，NSIS 安�
 已通过 73 项单元/回归测试、全量 lint、前端构建与体积预算、Rust 检查及内嵌资源的 debug/release 桌面构建。Windows NSIS 安装包已生成，约 2.76 MiB；release 程序约 11.1 MiB。debug 和 release 程序均已启动，Windows 可访问性树确认出现工作台、工具栏及成功的本地存档状态。安装包尚未实际安装验收，当前未配置代码签名。
 
 原生 UI 自动化环境返回过 `window capture timed out`、`coordinate input geometry is unavailable`，因此没有把原生文件对话框和关闭保护标记为实际交互验收通过。仍需在桌面窗口逐项检查：打开 JSON、取消打开、保存各类文件、取消保存、关闭时保存与失败保留、重启恢复、中文输入、图片拖放及真实 AI 请求。
+
+## 第二阶段第一批：Windows 密钥存储
+
+桌面端固定使用服务 `io.github.corizhang.onlyping`、账户 `ai-api-key`，前端不能传入任意凭据服务或账户。读写命令只授予本地 main 窗口，并序列化访问。实现使用 [keyring 3.6.3](https://docs.rs/keyring/3.6.3/keyring/struct.Entry.html) 的 Windows-native 后端；错误信息不包含密钥和底层凭据内容。
+
+启动时读取已记住的密钥；若同一桌面存档存在旧明文密钥，先成功写入系统凭据管理器，再清理 localStorage/sessionStorage。失败会提示并保留原明文以便重试，不会静默降级为明文保存。网页来源的配置不会自动迁移到桌面。关闭“记住”或清空 Key 后保存会移除应用的系统凭据；会话模式只存在内存中，重启需重填。密钥加载/保存期间阻止正常关闭窗口。
+
+凭据写入与非敏感配置写入不是跨存储事务：第二步失败会报告保存失败，已成功的凭据写入不保证回滚。请留在配置窗口重试。系统凭据存储降低落盘明文暴露，不防御同一用户权限下的恶意程序，也不改变 AI 调用需要将 Key 暂时载入内存的事实。macOS/Linux 当前明确返回不支持，不使用模拟密钥存储。
+
+本批通过 79 项前端测试、lint、生产构建与体积预算、Rust 检查，以及真实 Windows 凭据管理器的合成凭据写入/读取/删除测试；测试使用独立服务，不接触用户实际 API Key。新的验证程序位于 `src-tauri/target/debug/onlyping.exe`。第一阶段 release/NSIS 安装包尚未更新到本批，现有窗口也不会自动升级。配置界面的真实保存、重启恢复和故障提示仍待手动验收。
+
+下一批处理桌面项目存储适配、SQLite 事务和 IndexedDB 数据迁移，保留现有数据与可导出的恢复备份。

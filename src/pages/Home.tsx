@@ -61,7 +61,7 @@ import CanvasEditor from '@/components/CanvasEditor'
 import StepNotesEditor from '@/components/StepNotesEditor'
 import ExportPreview from '@/components/ExportPreview'
 import PageList from '@/components/PageList'
-import { loadAIConfig } from '@/lib/ai-config'
+import { loadAIConfig, restoreAIConfig } from '@/lib/ai-config'
 import { rectCoverage, runConsistencyChecks, type CheckIssue } from '@/lib/check'
 import { idbGet, idbSet, validateAutosave, listLocalProjects, readLocalProject, ProjectConflictError, type LocalProjectEntry, type ProjectData } from '@/lib/db'
 import { useProjectAutosave } from '@/hooks/use-project-autosave'
@@ -152,7 +152,16 @@ export default function Home() {
   const selectedAnnId = selectedAnnIds.at(-1) ?? null
   const setSelectedAnnId = useCallback((id: string | null) => setSelectedAnnIds(id ? [id] : []), [])
   const [editTextRequest, setEditTextRequest] = useState(0)
-  const [aiConfig, setAIConfig] = useState(loadAIConfig())
+  const [aiConfig, setAIConfig] = useState(loadAIConfig)
+  const [aiConfigReady, setAIConfigReady] = useState(!isDesktop())
+  useEffect(() => {
+    if (!isDesktop()) return
+    let disposed = false
+    restoreAIConfig().then(config => { if (!disposed) setAIConfig(config) })
+      .catch(() => { if (!disposed) toast.error('AI 密钥读取或迁移失败，请在接口配置中重新保存；原明文配置尚未移除') })
+      .finally(() => { if (!disposed) setAIConfigReady(true) })
+    return () => { disposed = true }
+  }, [])
   const [zoom, setZoom] = useState(1)
   const [zoomMode, setZoomMode] = useState<'fit' | 'width' | 'manual'>('fit')
   const [rightWidth, setRightWidth] = useState(() => loadJSON('mbz-right-width', (v): v is number => typeof v === 'number' && v >= 260 && v <= 440) ?? 288)
@@ -483,7 +492,7 @@ export default function Home() {
     catch { toast.error('本地项目列表读取失败，请重试') }
   }
   useDesktopClose(async () => {
-    if (exporting || hasActiveFileOperation()) { toast.info('请先完成或取消文件操作，再关闭窗口'); return false }
+    if (exporting || hasActiveFileOperation()) { toast.info('请先完成文件操作或配置保存，再关闭窗口'); return false }
     if (storageReady && await persistCurrent()) return true
     const { confirm } = await import('@tauri-apps/plugin-dialog')
     return confirm('本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
@@ -1458,7 +1467,7 @@ export default function Home() {
           </div>
           <div className={`${inspector === 'ai' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
         <AsyncAIPanel
-          enabled={inspector === 'ai'}
+          enabled={inspector === 'ai' && aiConfigReady}
           key={projectId}
           projectId={projectId}
           config={aiConfig}
