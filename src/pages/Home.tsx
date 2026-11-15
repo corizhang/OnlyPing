@@ -1320,6 +1320,7 @@ export default function Home() {
           >
             {selectedPage ? (
               <CanvasEditor
+                key={selectedPage.id}
                 page={selectedPage}
                 tool={tool}
                 color={color}

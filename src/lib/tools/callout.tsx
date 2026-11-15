@@ -1,19 +1,10 @@
 import type { CalloutAnnotation } from '@/types'
 import type { ContentTool } from './types'
+import { calloutLayout, ANNOTATION_FONT } from './text-layout'
 
 const tailSize = (a: CalloutAnnotation) => Math.min(18, Math.max(10, a.w * 0.12))
 const CALLOUT_FONT_SIZE = 16
 const CALLOUT_LINE_HEIGHT = 20
-
-function calloutLines(a: CalloutAnnotation): string[] {
-  const charsPerLine = Math.max(1, Math.floor((a.w - 20) / CALLOUT_FONT_SIZE))
-  return a.text.split('\n').flatMap(line => {
-    const chars = Array.from(line)
-    return chars.length > charsPerLine
-      ? Array.from({ length: Math.ceil(chars.length / charsPerLine) }, (_, index) => chars.slice(index * charsPerLine, (index + 1) * charsPerLine).join(''))
-      : [line]
-  }).slice(0, Math.max(1, Math.floor((a.h - 20) / CALLOUT_LINE_HEIGHT)))
-}
 
 function calloutPath(a: CalloutAnnotation): string {
   const tail = tailSize(a)
@@ -23,8 +14,10 @@ function calloutPath(a: CalloutAnnotation): string {
 export const calloutTool: ContentTool<'callout'> = {
   kind: 'callout',
   create: (id, x, y, style) => ({ id, kind: 'callout', x, y, w: 0, h: 0, text: '', color: style.color }),
-  hit: (a, x, y) => x >= a.x - 6 && x <= a.x + a.w + 6 && y >= a.y - 8 && y <= a.y + a.h + 10,
-  draw: (ctx, a) => {
+  hit: (a, x, y) => { const layout = calloutLayout(a); return x >= a.x - 6 && x <= a.x + layout.w + 6 && y >= a.y - 8 && y <= a.y + layout.h + 10 },
+  draw: (ctx, annotation) => {
+    const layout = calloutLayout(annotation)
+    const a = { ...annotation, w: layout.w, h: layout.h }
     const tail = tailSize(a)
     ctx.save()
     ctx.fillStyle = '#fff'
@@ -45,15 +38,16 @@ export const calloutTool: ContentTool<'callout'> = {
     ctx.font = `600 ${CALLOUT_FONT_SIZE}px "PingFang SC", "Microsoft YaHei", sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
-    calloutLines(a).forEach((line, index) => ctx.fillText(line, a.x + a.w / 2, a.y + 10 + index * CALLOUT_LINE_HEIGHT, Math.max(10, a.w - 20)))
+    layout.lines.forEach((line, index) => ctx.fillText(line, a.x + a.w / 2, a.y + 10 + index * CALLOUT_LINE_HEIGHT, Math.max(10, a.w - 20)))
     ctx.restore()
   },
-  view: (a) => {
-    const lines = calloutLines(a)
+  view: (annotation) => {
+    const { lines, w, h } = calloutLayout(annotation)
+    const a = { ...annotation, w, h }
     return (
       <>
         <path d={calloutPath(a)} fill="#fff" stroke={a.color} strokeWidth={2.5} />
-        <text x={a.x + a.w / 2} y={a.y + 10} textAnchor="middle" dominantBaseline="text-before-edge" fill={a.color} fontSize={CALLOUT_FONT_SIZE} fontWeight={600} pointerEvents="none">
+        <text x={a.x + a.w / 2} y={a.y + 10} textAnchor="middle" dominantBaseline="text-before-edge" fill={a.color} fontSize={CALLOUT_FONT_SIZE} fontWeight={600} fontFamily={ANNOTATION_FONT} pointerEvents="none">
           {lines.map((line, index) => <tspan key={index} x={a.x + a.w / 2} dy={index === 0 ? 0 : CALLOUT_LINE_HEIGHT}>{line}</tspan>)}
         </text>
       </>

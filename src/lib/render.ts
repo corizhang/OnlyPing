@@ -3,6 +3,7 @@ import { drawMarkAnnotation, isMarkAnnotation } from './tools/mark'
 import { drawContentAnnotation, isContentAnnotation } from './tools/content'
 export { mosaicCanvasRegion } from './pixelate'
 import type { Page } from '@/types'
+import { magnifierTool } from './tools/magnifier'
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>()
 
@@ -22,6 +23,10 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 
 /** 把一页（底图 + 全部标注）按原始尺寸渲染成一个画布；numberStart 为全局序号起始值 */
 export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<HTMLCanvasElement> {
+  // 所有放大镜从同一张不含放大镜的完整合成图取样，避免层级或重叠改变内容。
+  const magnifierSource = page.annotations.some(a => a.kind === 'magnifier')
+    ? await renderPageToCanvas({ ...page, annotations: page.annotations.filter(a => a.kind !== 'magnifier') }, numberStart)
+    : null
   const img = await loadImage(page.image)
   const canvas = document.createElement('canvas')
   canvas.width = page.width
@@ -46,9 +51,11 @@ export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<H
 
   for (const ann of page.annotations) {
     if (isAreaKind(ann.kind)) {
-      if (ann.kind !== 'mosaic') drawAreaAnnotation(ctx, ann, canvas)
+      if (ann.kind !== 'mosaic' && ann.kind !== 'redact') drawAreaAnnotation(ctx, ann, canvas)
     } else if (isMarkAnnotation(ann)) {
       drawMarkAnnotation(ctx, ann, (numIndex.get(ann.id) ?? 1) + numberStart)
+    } else if (ann.kind === 'magnifier' && magnifierSource) {
+      magnifierTool.draw(ctx, ann, magnifierSource)
     } else if (isContentAnnotation(ann)) {
       drawContentAnnotation(ctx, ann, canvas)
     }

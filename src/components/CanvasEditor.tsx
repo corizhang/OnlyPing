@@ -8,6 +8,12 @@ import { Button } from '@/components/ui/button'
 import type { Annotation, Page, Rect, Tool } from '@/types'
 import { loadImage, mosaicCanvasRegion, renderPageToCanvas } from '@/lib/render'
 import { MOSAIC_DEFAULT_TILE, uid } from '@/types'
+import { calloutLayout, textLayout } from '@/lib/tools/text-layout'
+import type { MarkAnnotation, MarkViewOptions } from '@/lib/tools/types'
+
+function MarkView({ annotation, ...options }: { annotation: MarkAnnotation } & MarkViewOptions) {
+  return renderMarkAnnotation(annotation, options)
+}
 
 interface Props {
   page: Page
@@ -97,6 +103,28 @@ function resizeRect(s: Rect, handle: ResizeHandle, px: number, py: number, bound
   return { x, y, w, h }
 }
 
+function ResizeHandles({ r, stroke, handleR, onDown }: { r: Rect; stroke: string; handleR: number; onDown: (e: React.PointerEvent, h: ResizeHandle) => void }) {
+  return <>{
+    HANDLES.map((h) => {
+      const p = handlePos(r, h)
+      return (
+        <rect
+          key={h}
+          x={p.x - handleR}
+          y={p.y - handleR}
+          width={handleR * 2}
+          height={handleR * 2}
+          fill="#ffffff"
+          stroke={stroke}
+          strokeWidth={2}
+          style={{ cursor: HANDLE_CURSOR[h] }}
+          onPointerDown={(e) => onDown(e, h)}
+        />
+      )
+    })
+  }</>
+}
+
 export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, editTextRequest, onSelect, onChange, onZoomChange, onCrop }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
@@ -114,6 +142,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   const suppressTextClickRef = useRef(false)
   const lastEditRequestRef = useRef(editTextRequest)
   const [textPos, setTextPos] = useState({ x: 0, y: 0, background: false })
+  const [editTarget, setEditTarget] = useState<Extract<Annotation, { kind: 'text' | 'callout' }> | null>(null)
   const [cropRect, setCropRect] = useState<Rect | null>(null)
 
   // Ctrl + 滚轮缩放
@@ -133,6 +162,8 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   // 裁剪：进入裁剪工具时给出覆盖全图的初始选区
   useEffect(() => {
     if (tool === 'crop') {
+      // 切换工具时初始化一次可交互选区，后续尺寸由用户拖动维护。
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCropRect({ x: 0, y: 0, w: page.width, h: page.height })
     } else {
       setCropRect(null)
@@ -146,8 +177,10 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   const redacts = page.annotations.filter(
     (ann): ann is Extract<Annotation, { kind: 'redact' }> => ann.kind === 'redact'
   )
-  mosaicsRef.current = mosaics
-  redactsRef.current = redacts
+  useEffect(() => {
+    mosaicsRef.current = mosaics
+    redactsRef.current = redacts
+  }, [mosaics, redacts])
   const hasMagnifier = page.annotations.some((ann) => ann.kind === 'magnifier')
   const mosaicKey = [...mosaics, ...redacts]
     .map((ann) => `${ann.id}:${ann.x}:${ann.y}:${ann.w}:${ann.h}:${ann.kind === 'mosaic' ? ann.tile ?? MOSAIC_DEFAULT_TILE : ann.color}`)
@@ -179,13 +212,12 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
 
   useEffect(() => {
     if (!hasMagnifier) {
-      setMagnifierSource('')
       return
     }
     let cancelled = false
     const timer = setTimeout(() => {
-      const sourcePage = { ...page, annotations: page.annotations.filter((ann) => ann.kind !== 'magnifier') }
-      void renderPageToCanvas(sourcePage).then((canvas) => {
+      const sourcePage = { id: 'magnifier-source', name: '', notes: '', width: page.width, height: page.height, image: page.image, annotations: page.annotations.filter((ann) => ann.kind !== 'magnifier') }
+      void renderPageToCanvas(sourcePage, numberStart).then((canvas) => {
         if (!cancelled) setMagnifierSource(canvas.toDataURL())
       }).catch(() => undefined)
     }, 100)
@@ -193,7 +225,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       cancelled = true
       clearTimeout(timer)
     }
-  }, [hasMagnifier, page.image, page.annotations])
+  }, [hasMagnifier, page.width, page.height, page.image, page.annotations, numberStart])
 
   useEffect(() => {
     let cancelled = false
@@ -253,9 +285,12 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     const text = textDraft.trim()
     const editing = page.annotations.find((a) => a.id === editingTextId)
     if (editing && (editing.kind === 'text' || editing.kind === 'callout')) {
-      if (text) updateAnnotation(editing.id, { text })
+      if (text) {
+        const layout = editing.kind === 'callout' ? calloutLayout({ ...editing, text }) : null
+        updateAnnotation(editing.id, layout ? { text, w: layout.w, h: layout.h } : { text })
+      }
       else onChange(page.annotations.filter((a) => a.id !== editing.id))
-    } else if (text) {
+    } else if (text && editingTextId === '__new__') {
       const ann = createContentAnnotation('text', uid(), textPos.x, textPos.y, {
         text, color, textSize, background: textPos.background,
       })
@@ -264,19 +299,23 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     }
     setEditingTextId(null)
     setTextDraft('')
-  }, [textDraft, editingTextId, textPos, page.annotations, color, textSize, onChange, onSelect, updateAnnotation])
+  }, [textDraft, editingTextId, textPos, page, color, textSize, onChange, onSelect, updateAnnotation, setEditingTextId, setTextDraft])
 
   const beginTextEdit = useCallback((id: string, text: string) => {
+    const target = page.annotations.find(a => a.id === id)
+    setEditTarget(target?.kind === 'text' || target?.kind === 'callout' ? target : null)
     textCommitRef.current = false
     textCancelRef.current = false
     setTextDraft(text)
     setEditingTextId(id)
-  }, [])
+  }, [page, setEditTarget, setTextDraft, setEditingTextId])
 
   useEffect(() => {
     if (editTextRequest === lastEditRequestRef.current) return
     lastEditRequestRef.current = editTextRequest
     const ann = page.annotations.find(a => a.id === selectedId)
+    // 顶部编辑按钮发出的显式请求，需要在画布内挂载并聚焦输入区。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (ann?.kind === 'text' || ann?.kind === 'callout') beginTextEdit(ann.id, ann.text)
   }, [editTextRequest, selectedId, page.annotations, beginTextEdit])
 
@@ -480,27 +519,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
 
   const numbers = page.annotations.filter((a) => a.kind === 'number')
   const numOf = new Map(numbers.map((n, i) => [n.id, i + 1]))
-  const selected = page.annotations.find((a) => a.id === selectedId)
   const handleR = 7 / scale
-
-  const renderHandles = (r: Rect, stroke: string, onDown: (e: React.PointerEvent, h: ResizeHandle) => void) =>
-    HANDLES.map((h) => {
-      const p = handlePos(r, h)
-      return (
-        <rect
-          key={h}
-          x={p.x - handleR}
-          y={p.y - handleR}
-          width={handleR * 2}
-          height={handleR * 2}
-          fill="#ffffff"
-          stroke={stroke}
-          strokeWidth={2}
-          style={{ cursor: HANDLE_CURSOR[h] }}
-          onPointerDown={(e) => onDown(e, h)}
-        />
-      )
-    })
 
   const cursor = tool === 'select' ? 'default' : 'crosshair'
 
@@ -552,7 +571,9 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
             fill="transparent"
             pointerEvents="all"
           />
-          {page.annotations.map((ann) => {
+          {page.annotations.map((original) => {
+            const layout = original.kind === 'callout' ? calloutLayout({ ...original, text: editingTextId === original.id ? textDraft : original.text }) : null
+            const ann = original.kind === 'callout' && layout ? { ...original, w: layout.w, h: layout.h } : original
             const isSel = ann.id === selectedId
             if (isAreaAnnotation(ann)) {
               return (
@@ -561,23 +582,19 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
                   {isSel && ann.kind !== 'mosaic' && (
                     <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
                   )}
-                  {isSel && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
+                  {isSel && <ResizeHandles r={ann} stroke="#2563eb" handleR={handleR} onDown={(e, h) => startResize(e, ann, h)} />}
                 </g>
               )
             }
             if (isMarkAnnotation(ann)) {
               return (
                 <g key={ann.id}>
-                  {renderMarkAnnotation(ann, {
-                    selected: isSel,
-                    label: numberStart + (numOf.get(ann.id) ?? 1),
-                    handleR,
-                    onEndpointDown: (event, end) => {
+                  {<MarkView annotation={ann} selected={isSel} label={numberStart + (numOf.get(ann.id) ?? 1)} handleR={handleR}
+                    onEndpointDown={(event, end) => {
                       event.stopPropagation()
                       event.currentTarget.setPointerCapture(event.pointerId)
                       dragRef.current = { mode: 'arrow-end', id: ann.id, end }
-                    },
-                  })}
+                    }} />}
                 </g>
               )
             }
@@ -594,7 +611,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
                   {isSel && ann.kind === 'callout' && (
                     <rect x={ann.x - 4} y={ann.y - 4} width={ann.w + 8} height={ann.h + 8} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
                   )}
-                  {isSel && ann.kind !== 'text' && renderHandles(ann, '#2563eb', (e, h) => startResize(e, ann, h))}
+                  {isSel && ann.kind !== 'text' && <ResizeHandles r={ann} stroke="#2563eb" handleR={handleR} onDown={(e, h) => startResize(e, ann, h)} />}
                 </g>
               )
             }
@@ -617,11 +634,11 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
                 stroke="#22c55e"
                 strokeWidth={2.5}
               />
-              {renderHandles(cropRect, '#16a34a', (e, h) => {
+              {<ResizeHandles r={cropRect} stroke="#16a34a" handleR={handleR} onDown={(e, h) => {
                 e.stopPropagation()
                 ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
                 dragRef.current = { mode: 'crop-handle', handle: h, snapshot: cropRect }
-              })}
+              }} />}
             </g>
           )}
         </svg>
@@ -656,6 +673,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
         {editingTextId && (
           <textarea
             autoFocus
+            wrap={editTarget?.kind === 'callout' ? 'soft' : 'off'}
             value={textDraft}
             onChange={(e) => setTextDraft(e.target.value)}
             onBlur={commitText}
@@ -668,43 +686,49 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
               if (e.key === 'Escape') {
                 e.preventDefault()
                 textCancelRef.current = true
+                if (editTarget?.kind === 'callout' && !editTarget.text) {
+                  onChange(page.annotations.filter(a => a.id !== editTarget.id))
+                  onSelect(null)
+                }
                 setEditingTextId(null)
                 setTextDraft('')
               }
             }}
-            placeholder={selected?.kind === 'callout' ? '输入说明文字' : '输入文字'}
+            placeholder={editTarget?.kind === 'callout' ? '输入说明文字' : '输入文字'}
             aria-label="标注文字编辑区"
             className="absolute z-10 resize-none outline-none placeholder:opacity-60"
-            style={selected?.kind === 'callout' ? {
-              left: (selected.x + 10) * scale,
-              top: (selected.y + 10) * scale,
-              width: Math.max(1, selected.w - 20) * scale,
-              height: Math.max(1, selected.h - 20) * scale,
+            style={editTarget?.kind === 'callout' ? {
+              left: (editTarget.x + 10) * scale,
+              top: (editTarget.y + 10) * scale,
+              width: Math.max(1, editTarget.w - 20) * scale,
+              height: Math.max(20, calloutLayout({ ...editTarget, text: textDraft }).h - 20) * scale,
               padding: 0,
               border: 0,
               background: 'transparent',
-              color: selected.color,
+              color: editTarget.color,
               font: `${600} ${16 * scale}px "PingFang SC", "Microsoft YaHei", sans-serif`,
               lineHeight: 1.25,
               textAlign: 'center',
+              wordBreak: 'break-all',
+              overflowWrap: 'anywhere',
               boxSizing: 'border-box',
             } : (() => {
-              const size = selected?.kind === 'text' ? selected.size ?? 26 : textSize
-              const x = selected?.kind === 'text' ? selected.x : textPos.x
-              const y = selected?.kind === 'text' ? selected.y : textPos.y
-              const background = selected?.kind === 'text' ? selected.background : textPos.background
-              const longest = Math.max(1, ...textDraft.split('\n').map(line => Array.from(line).length))
+              const size = editTarget?.kind === 'text' ? editTarget.size ?? 26 : textSize
+              const x = editTarget?.kind === 'text' ? editTarget.x : textPos.x
+              const y = editTarget?.kind === 'text' ? editTarget.y : textPos.y
+              const background = editTarget?.kind === 'text' ? editTarget.background : textPos.background
+              const layout = textLayout({ x, y, text: textDraft, size, background })
               return {
                 left: (x - (background ? 6 : 0)) * scale,
                 top: (y - size - (background ? 4 : 0)) * scale,
-                width: Math.min(page.width - x + 6, Math.max(110, longest * size * 0.7 + 24)) * scale,
-                minHeight: (Math.max(1, textDraft.split('\n').length) * Math.round(size * 1.3) + (background ? 10 : 4)) * scale,
+                width: Math.max(40, layout.textWidth + 16) * scale,
+                height: (layout.lines.length * layout.lineHeight + (background ? 10 : 4)) * scale,
                 padding: background ? `${4 * scale}px ${6 * scale}px` : `0 ${2 * scale}px`,
                 border: background ? `${Math.max(1, scale)}px solid #d1d5db` : 0,
                 background: background ? '#fff' : 'transparent',
-                color: selected?.kind === 'text' ? selected.color : color,
+                color: editTarget?.kind === 'text' ? editTarget.color : color,
                 font: `${700} ${size * scale}px "PingFang SC", "Microsoft YaHei", sans-serif`,
-                lineHeight: 1.3,
+                lineHeight: `${layout.lineHeight * scale}px`,
                 boxSizing: 'border-box' as const,
                 textShadow: background ? 'none' : `${scale}px ${scale}px #fff, -${scale}px -${scale}px #fff`,
                 outline: background ? 'none' : `1px dashed #3b82f6`,

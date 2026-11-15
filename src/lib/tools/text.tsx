@@ -1,23 +1,6 @@
 import type { ContentTool } from './types'
 
-const measureContext = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')
-
-function textBounds(a: { x: number; y: number; text: string; size?: number; background?: boolean }) {
-  const size = a.size ?? 26
-  const lineHeight = Math.round(size * 1.3)
-  const lines = a.text.split('\n')
-  if (measureContext) measureContext.font = `bold ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
-  const textWidth = Math.max(size * 0.6, ...lines.map(line => measureContext
-    ? measureContext.measureText(line).width
-    : Array.from(line).length * size))
-  return {
-    size, lineHeight, lines, textWidth,
-    x: a.x - (a.background ? 8 : 4),
-    y: a.y - size - 6,
-    w: textWidth + (a.background ? 16 : 12),
-    h: lines.length * lineHeight + (a.background ? 14 : 12),
-  }
-}
+import { textLayout as textBounds } from './text-layout'
 
 export const textTool: ContentTool<'text'> = {
   kind: 'text',
