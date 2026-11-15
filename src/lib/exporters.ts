@@ -1,3 +1,4 @@
+import { RenderQueue, checkTask, taskCheckpoint, releaseCanvas, canvasBlob, type RenderTask } from './render-task'
 import { AlignmentType, Document, HeadingLevel, ImageRun, Packer, Paragraph, TextRun } from 'docx'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
@@ -13,6 +14,8 @@ function download(blob: Blob, filename: string) {
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 5000)
 }
+
+const documentQueue = new RenderQueue()
 
 const FONT = '"PingFang SC", "Microsoft YaHei", sans-serif'
 const DOC_MAX_WIDTH = 560 // docx 图片最大宽度（px 计）
@@ -88,7 +91,8 @@ function wordNotes(page: Page, style: ExportStyle): Paragraph[] {
 }
 
 /** 导出 Word：标题 + 每页「步骤 N 说明 + 标注后截图 + 文字」 */
-export async function exportDocx(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
+export async function exportDocx(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1, task: RenderTask = {}) {
+  checkTask(task)
   const children = [
     new Paragraph({
       heading: HeadingLevel.HEADING_1,
@@ -98,6 +102,7 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
   ]
   const starts = computeNumberStarts(pages)
   for (let i = 0; i < pages.length; i++) {
+    await taskCheckpoint(task, '正在生成 Word 步骤', i, pages.length)
     const page = pages[i]
     children.push(
       new Paragraph({
@@ -114,7 +119,8 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
       )
     }
     const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)
-    const dataUrl = canvas.toDataURL('image/png')
+    let dataUrl: string
+    try { checkTask(task); dataUrl = canvas.toDataURL('image/png') } finally { releaseCanvas(canvas) }
     const ratio = Math.min(1, DOC_MAX_WIDTH / page.width)
     children.push(
       new Paragraph({
@@ -142,15 +148,22 @@ export async function exportDocx(title: string, pages: Page[], style: ExportStyl
     )
   }
   const doc = new Document({ sections: [{ children }] })
+  await taskCheckpoint(task, '正在打包 Word', pages.length, pages.length)
   const blob = await Packer.toBlob(doc)
+  checkTask(task)
   download(blob, `${title || '明白纸'}.docx`)
 }
 
 /** 预览与导出共用的排版、分页及栅格化管线。 */
 export async function renderDocument(
   title: string, pages: Page[], style: ExportStyle, footer: ExportFooter,
-  format: 'long' | 'pdf', imageScale = style.stepImageScale / 100,
+  format: 'long' | 'pdf', imageScale = style.stepImageScale / 100, task: RenderTask = {},
 ): Promise<HTMLCanvasElement[]> {
+  return documentQueue.run(task, () => renderDocumentJob(title, pages, style, footer, format, imageScale, task))
+}
+
+async function renderDocumentJob(title: string, pages: Page[], style: ExportStyle, footer: ExportFooter, format: 'long' | 'pdf', imageScale: number, task: RenderTask): Promise<HTMLCanvasElement[]> {
+  checkTask(task)
   const width = 840
   const padding = 48
   const maxHeight = format === 'pdf' ? 1188 : 7000
@@ -159,11 +172,36 @@ export async function renderDocument(
   root.setAttribute('aria-hidden', 'true')
   document.body.appendChild(root)
   const result: HTMLCanvasElement[] = []
+  const urls = new Set<string>()
+  let outputIndex = 0
+  const clearRoot = () => {
+    root.querySelectorAll('img').forEach(img => { if (urls.delete(img.src)) URL.revokeObjectURL(img.src) })
+    root.replaceChildren()
+  }
+  const emit = async (source: HTMLCanvasElement) => {
+    let canvas = source
+    try {
+      checkTask(task)
+      if (format === 'pdf') {
+        canvas = document.createElement('canvas')
+        canvas.width = width; canvas.height = maxHeight
+        const ctx = canvas.getContext('2d')!
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, width, maxHeight); ctx.drawImage(source, 0, 0)
+        releaseCanvas(source)
+      }
+      if (task.onCanvas) await task.onCanvas(canvas, outputIndex++)
+      else { result.push(canvas); outputIndex++ }
+      checkTask(task)
+    } finally {
+      if (task.onCanvas || task.signal?.aborted) releaseCanvas(canvas)
+    }
+  }
   const capture = async () => {
     if (!root.childElementCount) return
+    await taskCheckpoint(task, '正在生成输出页', outputIndex, outputIndex + 1)
     const canvas = await html2canvas(root, { backgroundColor: '#ffffff', scale: 1 })
-    result.push(canvas)
-    root.replaceChildren()
+    await emit(canvas)
+    clearRoot()
   }
   const append = async (block: HTMLElement) => {
     root.appendChild(block)
@@ -191,18 +229,21 @@ export async function renderDocument(
     for (let offset = 0; offset < fullHeight; offset += sliceHeight) {
       viewport.style.height = `${Math.min(sliceHeight, fullHeight - offset)}px`
       block.style.transform = `translateY(-${offset}px)`
-      result.push(await html2canvas(root, { backgroundColor: '#ffffff', scale: 1 }))
+      await taskCheckpoint(task, '正在切分长步骤', offset, fullHeight)
+      await emit(await html2canvas(root, { backgroundColor: '#ffffff', scale: 1 }))
     }
-    root.replaceChildren()
+    clearRoot()
   }
   try {
     await document.fonts.ready
+    checkTask(task)
     const heading = document.createElement('h1')
     heading.textContent = title || '明白纸'
     heading.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign};margin:0 0 20px;overflow-wrap:anywhere;`
     root.appendChild(heading)
     const starts = computeNumberStarts(pages)
     for (let i = 0; i < pages.length; i++) {
+      await taskCheckpoint(task, '正在渲染步骤', i, pages.length)
       const page = pages[i]
       const block = document.createElement('section')
       block.style.cssText = 'padding-top:24px;'
@@ -224,9 +265,10 @@ export async function renderDocument(
       }
       const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)
       const img = document.createElement('img')
-      img.src = canvas.toDataURL('image/png')
+      try { img.src = URL.createObjectURL(await canvasBlob(canvas, task)); urls.add(img.src) } finally { releaseCanvas(canvas) }
       img.style.cssText = `display:block;width:${Math.max(.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;`
       await img.decode()
+      checkTask(task)
       block.appendChild(img)
       await append(block)
     }
@@ -238,38 +280,36 @@ export async function renderDocument(
       await append(el)
     }
     await capture()
-    if (format === 'pdf') {
-      return result.map(canvas => {
-        const sheet = document.createElement('canvas')
-        sheet.width = width
-        sheet.height = maxHeight
-        const ctx = sheet.getContext('2d')!
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, width, maxHeight)
-        ctx.drawImage(canvas, 0, 0)
-        return sheet
-      })
-    }
     return result
+  } catch (err) {
+    result.forEach(releaseCanvas)
+    throw err
   } finally {
+    for (const url of urls) URL.revokeObjectURL(url)
     root.remove()
   }
 }
 
-export async function exportPdf(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
-  const canvases = await renderDocument(title, pages, style, footer, 'pdf', imageScale)
+export async function exportPdf(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1, task: RenderTask = {}) {
   const pdf = new jsPDF({ unit: 'pt', format: 'a4' })
-  canvases.forEach((canvas, i) => {
+  await renderDocument(title, pages, style, footer, 'pdf', imageScale, { ...task, onCanvas: async (canvas, i) => {
+    await taskCheckpoint(task, '正在编码 PDF 页', i, i + 1)
     if (i) pdf.addPage()
     pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight())
-  })
+  } })
+  await taskCheckpoint(task, '正在打包 PDF', pages.length, pages.length)
   pdf.save(`${title || '明白纸'}.pdf`)
 }
 
-export async function exportLongImage(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1) {
-  const canvases = await renderDocument(title, pages, style, footer, 'long', imageScale)
-  for (let i = 0; i < canvases.length; i++) {
-    const blob = await new Promise<Blob>((resolve, reject) => canvases[i].toBlob(value => value ? resolve(value) : reject(new Error('图片编码失败'))))
-    download(blob, `${title || '明白纸'}-长图${canvases.length > 1 ? `-${i + 1}` : ''}.png`)
+export async function exportLongImage(title: string, pages: Page[], style: ExportStyle = DEFAULT_EXPORT_STYLE, footer: ExportFooter = DEFAULT_EXPORT_FOOTER, imageScale = 1, task: RenderTask = {}) {
+  const blobs: Blob[] = []
+  await renderDocument(title, pages, style, footer, 'long', imageScale, { ...task, onCanvas: async (canvas, index) => {
+    await taskCheckpoint(task, '正在编码长图', index, index + 1)
+    blobs.push(await canvasBlob(canvas, task))
+  } })
+  // 全部生成后再下载，取消时不留下只生成一半的文件组。
+  for (let i = 0; i < blobs.length; i++) {
+    checkTask(task)
+    download(blobs[i], `${title || '明白纸'}-长图${blobs.length > 1 ? `-${i + 1}` : ''}.png`)
   }
 }

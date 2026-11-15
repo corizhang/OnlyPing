@@ -1,3 +1,5 @@
+import { useExportTask } from '@/hooks/use-export-task'
+import { checkTask, isTaskCancelled, taskCheckpoint, type RenderTask } from '@/lib/render-task'
 import AnnotationList from '@/components/AnnotationList'
 import { copySelection, editableSelection } from '@/lib/selection'
 import AnnotationParameters from '@/components/AnnotationParameters'
@@ -144,7 +146,6 @@ export default function Home() {
   const setSelectedAnnId = useCallback((id: string | null) => setSelectedAnnIds(id ? [id] : []), [])
   const [editTextRequest, setEditTextRequest] = useState(0)
   const [aiConfig, setAIConfig] = useState(loadAIConfig())
-  const [exporting, setExporting] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [zoomMode, setZoomMode] = useState<'fit' | 'width' | 'manual'>('fit')
   const [rightWidth, setRightWidth] = useState(() => loadJSON('mbz-right-width', (v): v is number => typeof v === 'number' && v >= 260 && v <= 440) ?? 288)
@@ -179,6 +180,8 @@ export default function Home() {
   const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
   const [exportFooter, setExportFooterState] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
   const [projectId, setProjectId] = useState<string>(() => crypto.randomUUID())
+  const exportTask = useExportTask(projectId)
+  const exporting = exportTask.busy
   const [localProjects, setLocalProjects] = useState<LocalProjectEntry[]>([])
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pendingText, setPendingText] = useState(false)
@@ -324,10 +327,11 @@ export default function Home() {
   }
 
   // AI 隐私扫描核心：逐页识别疑似未打码的隐私内容（已有打码覆盖 ≥50% 的自动跳过）
-  const collectAiPrivacyIssues = async (): Promise<CheckIssue[]> => {
+  const collectAiPrivacyIssues = async (task: RenderTask = {}): Promise<CheckIssue[]> => {
     const found: CheckIssue[] = []
     const privacyMode = localStorage.getItem('mbz-privacy') === '1'
     for (let i = 0; i < pages.length; i++) {
+      await taskCheckpoint(task, '正在检查隐私', i, pages.length)
       const p = pages[i]
       setAiScanProgress(`正在扫描 ${i + 1}/${pages.length} 页…`)
       try {
@@ -336,7 +340,8 @@ export default function Home() {
           .filter((a) => a.kind === 'mosaic' || a.kind === 'redact')
           .map((a) => ({ x: a.x / p.width, y: a.y / p.height, w: a.w / p.width, h: a.h / p.height }))
         const pageForAI = await preparePageForAI(p, privacyMode)
-        const results = await aiPrivacyScanPage(aiConfig, pageForAI, mosaics)
+        const results = await aiPrivacyScanPage(aiConfig, pageForAI, mosaics, task.signal)
+        checkTask(task)
         for (const r of results) {
           if (rectCoverage(r.region, mosaics) >= 0.5) continue
           found.push({
@@ -348,6 +353,7 @@ export default function Home() {
           })
         }
       } catch (err) {
+        if (isTaskCancelled(err)) throw err
         found.push({
           severity: 'info',
           category: '隐私',
@@ -617,48 +623,51 @@ export default function Home() {
   }
 
   const doExport = async (kind: 'docx' | 'pdf' | 'long' | 'page') => {
-    // 整份导出前先跑全量检查：确定性检查 +（可选）AI 隐私扫描；有警告需用户确认
-    if (kind !== 'page') {
-      const found = runConsistencyChecks(title, pages, exportFooter)
-      let all = found
-      if (autoAiScan && (aiConfig.apiKey || aiConfig.demo) && pages.length) {
-        setAiScanning(true)
-        setAiScanProgress('')
-        try {
-          all = [...found, ...(await collectAiPrivacyIssues())]
-        } finally {
-          setAiScanning(false)
-          setAiScanProgress('')
-        }
-      }
-      setIssues(all)
-      setCheckSig(checkSignature(title, pages, exportFooter))
-      const warns = all.filter((i) => i.severity === 'warn')
-      if (warns.length) {
-        const brief = warns
-          .slice(0, 3)
-          .map((w) => `· ${w.message}`)
-          .join('\n')
-        const ok = window.confirm(
-          `导出前检查发现 ${warns.length} 项警告：\n${brief}${warns.length > 3 ? '\n…' : ''}\n\n建议先修正再导出，仍要导出吗？`
-        )
-        if (!ok) {
-          setCheckOpen(true)
-          return
-        }
-      }
-    }
-    setExporting(true)
+    setPreviewOpen(false)
     try {
-      const stepImageScale = (exportStyle.stepImageScale ?? 100) / 100
-      if (kind === 'docx') await exportDocx(title, pages, exportStyle, exportFooter, stepImageScale)
-      else if (kind === 'pdf') await exportPdf(title, pages, exportStyle, exportFooter, stepImageScale)
-      else if (kind === 'long') await exportLongImage(title, pages, exportStyle, exportFooter, stepImageScale)
-      else if (selectedPage) await downloadPageImage(selectedPage, numberStarts.get(selectedPage.id) ?? 0)
+      await exportTask.run(async task => {
+        await taskCheckpoint(task, '正在准备导出', 0, pages.length)
+        // 整份导出前先跑全量检查：确定性检查 +（可选）AI 隐私扫描；有警告需用户确认
+        if (kind !== 'page') {
+          const found = runConsistencyChecks(title, pages, exportFooter)
+          let all = found
+          if (autoAiScan && (aiConfig.apiKey || aiConfig.demo) && pages.length) {
+            setAiScanning(true)
+            setAiScanProgress('')
+            try {
+              all = [...found, ...(await collectAiPrivacyIssues(task))]
+            } finally {
+              setAiScanning(false)
+              setAiScanProgress('')
+            }
+          }
+          setIssues(all)
+          setCheckSig(checkSignature(title, pages, exportFooter))
+          const warns = all.filter((i) => i.severity === 'warn')
+          if (warns.length) {
+            const brief = warns
+              .slice(0, 3)
+              .map((w) => `· ${w.message}`)
+              .join('\n')
+            const ok = window.confirm(
+              `导出前检查发现 ${warns.length} 项警告：\n${brief}${warns.length > 3 ? '\n…' : ''}\n\n建议先修正再导出，仍要导出吗？`
+            )
+            if (!ok) {
+              setCheckOpen(true)
+              return
+            }
+          }
+        }
+        checkTask(task)
+        const stepImageScale = (exportStyle.stepImageScale ?? 100) / 100
+        if (kind === 'docx') await exportDocx(title, pages, exportStyle, exportFooter, stepImageScale, task)
+        else if (kind === 'pdf') await exportPdf(title, pages, exportStyle, exportFooter, stepImageScale, task)
+        else if (kind === 'long') await exportLongImage(title, pages, exportStyle, exportFooter, stepImageScale, task)
+        else if (selectedPage) await downloadPageImage(selectedPage, numberStarts.get(selectedPage.id) ?? 0, task)
+      })
     } catch (err) {
-      toast.error('导出失败', { description: err instanceof Error ? err.message : '请重试' })
-    } finally {
-      setExporting(false)
+      if (isTaskCancelled(err)) toast.info('已取消导出')
+      else toast.error('导出失败', { description: err instanceof Error ? err.message : '请重试' })
     }
   }
 
@@ -939,10 +948,11 @@ export default function Home() {
             <ListChecks className="size-4" />
             一致性检查{issues.length ? `（${issues.length}）` : ''}
           </Button>
-          <Button variant="outline" size="sm" className="h-9 bg-background" disabled={!pages.length} onClick={() => setPreviewOpen(true)}>
+          <Button variant="outline" size="sm" className="h-9 bg-background" disabled={exporting || !pages.length} onClick={() => setPreviewOpen(true)}>
             <Eye className="size-4" />
             预览导出
           </Button>
+          {exporting && <div className="flex items-center gap-2 text-xs" role="status"><span className="max-w-44 truncate" title={exportTask.progress?.phase}>{exportTask.progress ? `${exportTask.progress.phase} ${exportTask.progress.completed}/${exportTask.progress.total}` : '正在准备…'}</span><Button size="sm" variant="outline" onClick={exportTask.cancel}>取消导出</Button></div>}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="sm" className="h-9 px-4" disabled={exporting || !pages.length}>

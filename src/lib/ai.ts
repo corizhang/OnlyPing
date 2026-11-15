@@ -1,4 +1,5 @@
 import type { AIConfig, Page, Rect } from '@/types'
+import { cancellableDelay } from './render-task.ts'
 
 const DEFAULT_DEMO = true
 
@@ -36,8 +37,11 @@ class APIError extends Error {
   }
 }
 
-function chatOnce(config: AIConfig, messages: ChatMessage[], jsonMode: boolean): Promise<string> {
+function chatOnce(config: AIConfig, messages: ChatMessage[], jsonMode: boolean, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted()
   const controller = new AbortController()
+  const abort = () => controller.abort(signal?.reason)
+  signal?.addEventListener('abort', abort, { once: true })
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   return fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST',
@@ -65,20 +69,21 @@ function chatOnce(config: AIConfig, messages: ChatMessage[], jsonMode: boolean):
       if (!content) throw new Error('API 返回为空')
       return typeof content === 'string' ? content : JSON.stringify(content)
     })
-    .finally(() => clearTimeout(timer))
+    .finally(() => { clearTimeout(timer); signal?.removeEventListener('abort', abort) })
 }
 
-async function chat(config: AIConfig, messages: ChatMessage[], jsonMode: boolean): Promise<string> {
+async function chat(config: AIConfig, messages: ChatMessage[], jsonMode: boolean, signal?: AbortSignal): Promise<string> {
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await chatOnce(config, messages, jsonMode)
+      return await chatOnce(config, messages, jsonMode, signal)
     } catch (err) {
+      signal?.throwIfAborted()
       lastErr = err
       const retryable = err instanceof APIError && (err.status === 429 || err.status >= 500)
       const aborted = err instanceof DOMException && err.name === 'AbortError'
       if (!retryable && !aborted) throw err
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 1500))
+      if (attempt === 0) await cancellableDelay(1500, signal)
     }
   }
   if (lastErr instanceof DOMException && lastErr.name === 'AbortError') {
@@ -245,8 +250,10 @@ export async function aiSuggestMosaics(
 export async function aiPrivacyScanPage(
   config: AIConfig & { demo: boolean },
   page: Page,
-  existingMosaics: Rect[]
+  existingMosaics: Rect[],
+  signal?: AbortSignal,
 ): Promise<{ type: string; reason: string; region: Rect }[]> {
+  signal?.throwIfAborted()
   if (config.demo || !config.apiKey) {
     // 演示模式：没打码就提示一个示例问题
     return existingMosaics.length
@@ -267,7 +274,7 @@ export async function aiPrivacyScanPage(
       },
       visionUser(`请检查这张截图中所有需要打码的隐私内容。${mosaicDesc}`, page.image),
     ],
-    true
+    true, signal
   )
   const data = parseJSON<{ issues?: { type?: string; reason?: string; region?: { x: number; y: number; w: number; h: number } }[] }>(raw)
   return (data.issues ?? [])

@@ -12,6 +12,7 @@ import { Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Annotation, Page, Rect, Tool } from '@/types'
 import { loadImage, mosaicCanvasRegion, renderPageToCanvas } from '@/lib/render'
+import { releaseCanvas } from '@/lib/render-task'
 import { MOSAIC_DEFAULT_TILE, uid } from '@/types'
 import { calloutLayout, textLayout } from '@/lib/tools/text-layout'
 import type { MarkAnnotation, MarkViewOptions } from '@/lib/tools/types'
@@ -114,7 +115,6 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   useEffect(() => {
     if (tool === 'crop') {
       // 切换工具时初始化一次可交互选区，后续尺寸由用户拖动维护。
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCropRect({ x: 0, y: 0, w: page.width, h: page.height })
     } else {
       setCropRect(null)
@@ -169,7 +169,8 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     const timer = setTimeout(() => {
       const sourcePage = { id: 'magnifier-source', name: '', notes: '', width: page.width, height: page.height, image: page.image, annotations: page.annotations.filter((ann) => ann.kind !== 'magnifier') }
       void renderPageToCanvas(sourcePage, numberStart).then((canvas) => {
-        if (!cancelled) setMagnifierSource(canvas.toDataURL())
+        try { if (!cancelled) setMagnifierSource(canvas.toDataURL()) }
+        finally { releaseCanvas(canvas) }
       }).catch(() => undefined)
     }, 100)
     return () => {
@@ -269,7 +270,6 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     lastEditRequestRef.current = editTextRequest
     const ann = page.annotations.find(a => a.id === selectedId)
     // 顶部编辑按钮发出的显式请求，需要在画布内挂载并聚焦输入区。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (ann?.kind === 'text' || ann?.kind === 'callout') beginTextEdit(ann.id, ann.text)
   }, [editTextRequest, selectedId, page.annotations, beginTextEdit])
 
