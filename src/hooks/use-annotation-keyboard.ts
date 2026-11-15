@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import type { Annotation, Page, Tool } from '@/types'
 import { uid } from '@/types'
 import { copySelection, editableSelection, moveSelection } from '@/lib/selection'
+import { isComposingKey } from '@/lib/input-settlement'
 
 interface SelectionKeyboardProps {
   page: Page; tool: Tool; selectedIds: string[]
@@ -13,7 +14,7 @@ export function useAnnotationKeyboard({ page, tool, selectedIds, onChange, onSel
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
-      if (e.defaultPrevented || target.closest('input,textarea,select,[role=slider],[role=separator],[role=tab],[role=menuitem]') || target.isContentEditable) return
+      if (isComposingKey(e) || e.defaultPrevented || target.closest('input,textarea,select,[role=slider],[role=separator],[role=tab],[role=menuitem]') || target.isContentEditable) return
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && tool !== 'crop') {
         e.preventDefault()
         onSelectionChange(page.annotations.filter(a => !a.locked && !a.hidden).map(a => a.id))

@@ -4,6 +4,8 @@ import { registerHooks } from 'node:module'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 // Node 不原生加载 TSX；测试加载器只转换本地源码，不修改生产打包入口。
 registerHooks({
@@ -24,6 +26,16 @@ registerHooks({
     if (url.endsWith('.tsx')) return { format: 'module', shortCircuit: true, source: ts.transpileModule(readFileSync(fileURLToPath(url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } }).outputText }
     return next(url, context)
   },
+})
+
+test('collapsed annotation panels do not mount object controls for every annotation', async () => {
+  const { default: AnnotationList } = await import('../src/components/AnnotationList.tsx')
+  const html = renderToStaticMarkup(createElement(AnnotationList, {
+    annotations: Array.from({ length: 100 }, (_, i) => ({ id: `box-${i}`, kind: 'box', x: i, y: i, w: 10, h: 10, color: '#ff0000' })),
+    selectedIds: [], onSelectionChange: () => {}, onChange: () => {},
+  }))
+  assert.match(html, /<summary[^>]*>标注对象 · 100<\/summary>/)
+  assert.ok(!html.includes('<button'), 'collapsed rows must not allocate hidden buttons or icons')
 })
 
 const draws = []

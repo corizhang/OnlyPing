@@ -5,6 +5,7 @@ import { drawContentAnnotation, isContentAnnotation } from './tools/content'
 export { mosaicCanvasRegion } from './pixelate'
 import type { Page } from '@/types'
 import { magnifierTool } from './tools/magnifier'
+import { startEditorPhase } from './editor-performance'
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>()
 const imagePixels = new Map<string, number>()
@@ -22,13 +23,15 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   let p = imageCache.get(src)
   if (p) { imageCache.delete(src); imageCache.set(src, p) }
   if (!p) {
+    const finish = startEditorPhase('image-load')
     p = new Promise((resolve, reject) => {
       const img = new Image()
       img.onload = () => {
+        finish()
         if (imageCache.get(src) === p) { imagePixels.set(src, (img.naturalWidth || 0) * (img.naturalHeight || 0)); trimImageCache() }
         resolve(img)
       }
-      img.onerror = () => { if (imageCache.get(src) === p) removeCachedImage(src); reject(new Error('图片加载失败')) }
+      img.onerror = () => { finish(); if (imageCache.get(src) === p) removeCachedImage(src); reject(new Error('图片加载失败')) }
       img.src = src
     })
     imageCache.set(src, p)

@@ -7,12 +7,14 @@ import { hitArea, isAreaAnnotation, renderAreaAnnotation } from '@/lib/tools/are
 import { createAnnotation, type DrawableTool } from '@/lib/tools'
 import { hitMark, isMarkAnnotation, renderMarkAnnotation } from '@/lib/tools/mark'
 import { createContentAnnotation, hitContent, isContentAnnotation, renderContentAnnotation } from '@/lib/tools/content'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { isComposingKey, type InputSettlement } from '@/lib/input-settlement'
 import { Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Annotation, Page, Rect, Tool } from '@/types'
 import { loadImage, mosaicCanvasRegion, renderPageToCanvas } from '@/lib/render'
 import { releaseCanvas } from '@/lib/render-task'
+import { startEditorPhase } from '@/lib/editor-performance'
 import { MOSAIC_DEFAULT_TILE, uid } from '@/types'
 import { calloutLayout, textLayout } from '@/lib/tools/text-layout'
 import type { MarkAnnotation, MarkViewOptions } from '@/lib/tools/types'
@@ -22,6 +24,7 @@ function MarkView({ annotation, ...options }: { annotation: MarkAnnotation } & M
 }
 
 interface Props {
+  inputSessions?: InputSettlement
   page: Page
   tool: Tool
   color: string
@@ -76,7 +79,10 @@ function ResizeHandles({ r, stroke, handleR, onDown }: { r: Rect; stroke: string
   }</>
 }
 
-export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, selectedIds, onSelectionChange, editTextRequest, onTextEditingChange, onSelect, onChange, onZoomChange, onCrop }: Props) {
+export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, selectedIds, onSelectionChange, editTextRequest, onTextEditingChange, onSelect, onChange, onZoomChange, onCrop, inputSessions }: Props) {
+  const textInputRef = useRef<HTMLTextAreaElement>(null)
+  const composingTextRef = useRef(false)
+  const commitAfterCompositionRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
   const baseImageRef = useRef<HTMLImageElement | null>(null)
@@ -140,6 +146,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   const drawBase = useCallback((img: HTMLImageElement) => {
     const canvas = baseRef.current
     if (!canvas) return
+    const finish = startEditorPhase('canvas-draw')
     if (canvas.width !== page.width) canvas.width = page.width
     if (canvas.height !== page.height) canvas.height = page.height
     const ctx = canvas.getContext('2d')!
@@ -159,6 +166,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
       ctx.fillStyle = ann.color
       ctx.fillRect(ann.x, ann.y, ann.w, ann.h)
     }
+    finish()
   }, [page.width, page.height])
 
   useEffect(() => {
@@ -233,9 +241,9 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   )
 
   const commitText = useCallback(() => {
-    if (!editingTextId || textCommitRef.current || textCancelRef.current) return
+    if (!editingTextId || composingTextRef.current || textCommitRef.current || textCancelRef.current) return
     textCommitRef.current = true
-    const text = textDraft.trim()
+    const text = (textInputRef.current?.value ?? textDraft).trim()
     const editing = page.annotations.find((a) => a.id === editingTextId)
     if (editing && (editing.kind === 'text' || editing.kind === 'callout')) {
       if (text) {
@@ -255,7 +263,11 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     onTextEditingChange?.(false)
   }, [textDraft, editingTextId, textPos, page, color, textSize, onChange, onSelect, onTextEditingChange, updateAnnotation, setEditingTextId, setTextDraft])
 
+  useLayoutEffect(() => inputSessions?.register(commitText), [inputSessions, commitText])
+
   const beginTextEdit = useCallback((id: string, text: string) => {
+    composingTextRef.current = false
+    commitAfterCompositionRef.current = false
     const target = page.annotations.find(a => a.id === id)
     setEditTarget(target?.kind === 'text' || target?.kind === 'callout' ? target : null)
     textCommitRef.current = false
@@ -569,13 +581,26 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
         {/* 输入区覆盖在标注自身，不再出现独立的悬浮编辑框。 */}
         {editingTextId && (
           <textarea
+            ref={textInputRef}
             autoFocus
             wrap={editTarget?.kind === 'callout' ? 'soft' : 'off'}
             value={textDraft}
             onChange={(e) => setTextDraft(e.target.value)}
-            onBlur={commitText}
+            onCompositionStart={() => { composingTextRef.current = true }}
+            onCompositionEnd={() => {
+              composingTextRef.current = false
+              if (commitAfterCompositionRef.current) {
+                commitAfterCompositionRef.current = false
+                queueMicrotask(commitText)
+              }
+            }}
+            onBlur={() => {
+              if (composingTextRef.current) { commitAfterCompositionRef.current = true; return }
+              commitText()
+            }}
             onKeyDown={(e) => {
               e.stopPropagation()
+              if (isComposingKey(e.nativeEvent)) return
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault()
                 commitText()

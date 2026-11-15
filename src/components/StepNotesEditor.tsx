@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import { createDocument, Extension } from '@tiptap/core'
 import { freshNotesState } from '@/lib/notes-editor-state'
+import type { InputSettlement } from '@/lib/input-settlement'
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { BackgroundColor, Color, FontSize, TextStyle } from '@tiptap/extension-text-style'
@@ -30,6 +31,7 @@ const ParagraphLineHeight = Extension.create({
 })
 
 interface Props {
+  inputSessions?: InputSettlement
   documentId: string
   notes: string
   notesRich?: string
@@ -44,7 +46,7 @@ const EXTENSIONS = [
 ]
 const EDITOR_PROPS = { attributes: { class: 'step-notes-content min-h-36 outline-none', 'aria-label': '步骤说明富文本编辑区' } }
 
-export default function StepNotesEditor({ documentId, notes, notesRich, onChange }: Props) {
+export default function StepNotesEditor({ documentId, notes, notesRich, onChange, inputSessions }: Props) {
   const sourceKey = notesRich ?? `plain:${notes}`
   const lastLocalKey = useRef(sourceKey)
   const activeTarget = useRef({ documentId, onChange })
@@ -61,6 +63,14 @@ export default function StepNotesEditor({ documentId, notes, notesRich, onChange
       activeTarget.current.onChange(current.getText({ blockSeparator: '\n' }), html)
     },
   })
+
+  useLayoutEffect(() => inputSessions?.register(() => {
+    if (!editor || editor.isDestroyed) return
+    const html = editor.getHTML()
+    if (html === lastLocalKey.current) return
+    lastLocalKey.current = html
+    activeTarget.current.onChange(editor.getText({ blockSeparator: '\n' }), html)
+  }), [inputSessions, editor])
 
   // 本地输入由 Tiptap 维护光标；只在 AI 或项目加载从外部替换说明时同步。
   useLayoutEffect(() => {

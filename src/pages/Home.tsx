@@ -69,6 +69,8 @@ import ProjectLibrary from '@/components/ProjectLibrary'
 import { deleteLocalProject } from '@/lib/db'
 import { storageErrorMessage } from '@/lib/storage-errors'
 import { setRecoveryProject } from '@/lib/crash-recovery'
+import { startEditorPhase } from '@/lib/editor-performance'
+import { InputSettlement, isComposingKey } from '@/lib/input-settlement'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
@@ -183,6 +185,20 @@ export default function Home() {
   const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
   const [exportFooter, setExportFooterState] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
   const [projectId, setProjectId] = useState<string>(() => crypto.randomUUID())
+  const projectIdRef = useRef(projectId)
+  useEffect(() => { projectIdRef.current = projectId }, [projectId])
+  const [compositionPending, setCompositionPending] = useState(false)
+  const [inputSessions] = useState(() => new InputSettlement(setCompositionPending))
+  useEffect(() => { inputSessions.activate(); return () => inputSessions.dispose() }, [inputSessions])
+  const blurInput = () => {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && (active.matches('input,textarea') || active.isContentEditable)) active.blur()
+  }
+  const inputBlocked = () => toast.info('中文输入尚未完成，请确认候选文字后重试；当前编辑内容仍保留。')
+  const selectStep = (id: string) => { void inputSessions.transition(() => {
+    if (!pagesRef.current.some(page => page.id === id)) return
+    setSelectedPageId(id); setSelectedAnnId(null)
+  }, blurInput, inputBlocked).catch(() => toast.error('输入收尾失败，请保留当前页面并重试')) }
   const exportTask = useExportTask(projectId)
   const exporting = exportTask.busy
   const [localProjects, setLocalProjects] = useState<LocalProjectEntry[]>([])
@@ -325,8 +341,7 @@ export default function Home() {
 
   const locateIssue = (issue: CheckIssue) => {
     if (issue.pageId) {
-      setSelectedPageId(issue.pageId)
-      setSelectedAnnId(null)
+      selectStep(issue.pageId)
     }
     setCheckOpen(false)
   }
@@ -434,15 +449,21 @@ export default function Home() {
 
   const saveData = useMemo(() => ({ schemaVersion: 1 as const, projectId, title, pages, exportStyle, exportFooter }), [projectId, title, pages, exportStyle, exportFooter])
   useEffect(() => { if (storageReady) setRecoveryProject(saveData) }, [storageReady, saveData])
-  const autosave = useProjectAutosave(saveData, storageReady, pendingText)
+  const autosave = useProjectAutosave(saveData, storageReady, pendingText || compositionPending)
   const persistCurrent = async () => {
     if (!storageReady) return true
-    try { await idbSet({ ...saveData, savedAt: Date.now() }); return true }
+    const sourceProjectId = projectIdRef.current
+    try {
+      if (!await inputSessions.settle(blurInput)) { inputBlocked(); return false }
+      if (projectIdRef.current !== sourceProjectId) return false
+      await idbSet({ schemaVersion: 1, projectId: sourceProjectId, ...snapshot(), savedAt: Date.now() }); return true
+    }
     catch (err) {
       if (err instanceof ProjectConflictError) {
         try {
           const copyId = crypto.randomUUID()
-          await idbSet({ ...saveData, projectId: copyId, title: `${title}（冲突副本）`, savedAt: Date.now() })
+          await idbSet({ schemaVersion: 1, ...snapshot(), projectId: copyId, title: `${metadataRef.current.title}（冲突副本）`, savedAt: Date.now() })
+          projectIdRef.current = copyId
           setProjectId(copyId)
           setTitleState(`${title}（冲突副本）`)
           toast.info('检测到其他页面修改，已将当前内容保存为冲突副本')
@@ -455,6 +476,7 @@ export default function Home() {
   }
   const openLocalProjects = async () => {
     await persistCurrent()
+    if (inputSessions.awaitingComposition) return
     try { setLocalProjects(await listLocalProjects()); setLibraryOpen(true) }
     catch { toast.error('本地项目列表读取失败，请重试') }
   }
@@ -472,6 +494,7 @@ export default function Home() {
   // Ctrl+Z / Ctrl+Y 撤销重做
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (isComposingKey(e)) return
       const target = e.target as HTMLElement | null
       const editing = !!target && (
         ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) ||
@@ -544,9 +567,11 @@ export default function Home() {
     const el = viewportRef.current
     if (!el || !canvasWidth || !canvasHeight || zoomMode === 'manual') return
     const fit = () => {
+      const finish = startEditorPhase('canvas-fit')
       const width = Math.max(1, el.clientWidth - 32) / canvasWidth
       const height = Math.max(1, el.clientHeight - 64) / canvasHeight
       setZoom(Math.min(1, zoomMode === 'width' ? width : Math.min(width, height)))
+      finish()
     }
     fit()
     const observer = new ResizeObserver(fit)
@@ -603,8 +628,10 @@ export default function Home() {
   }
 
   const removePage = (id: string) => {
-    commitPages((prev) => prev.filter((p) => p.id !== id))
-    if (selectedPageId === id) setSelectedPageId(null)
+    void inputSessions.transition(() => {
+      commitPages((prev) => prev.filter((p) => p.id !== id))
+      if (selectedPageId === id) setSelectedPageId(null)
+    }, blurInput, inputBlocked).catch(() => toast.error('输入收尾失败，请重试'))
   }
 
   // 裁剪：图片裁为选区，标注坐标平移/裁剪，首次裁剪保留原图快照
@@ -691,20 +718,27 @@ export default function Home() {
     }
   }
 
-  const saveProject = () => {
-    const blob = new Blob([JSON.stringify({ schemaVersion: 1, projectId, title, pages, exportStyle, exportFooter }, null, 2)], {
-      type: 'application/json',
-    })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${title || '明白纸项目'}.json`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+  const saveProject = async () => {
+    try {
+      const sourceProjectId = projectIdRef.current
+      if (!await inputSessions.settle(blurInput)) { inputBlocked(); return }
+      if (projectIdRef.current !== sourceProjectId) return
+      const blob = new Blob([JSON.stringify({ schemaVersion: 1, projectId: sourceProjectId, ...snapshot() }, null, 2)], {
+        type: 'application/json',
+      })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `${metadataRef.current.title || '明白纸项目'}.json`
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    } catch (error) { toast.error('项目备份失败，请保留当前页面并重试', { description: error instanceof Error ? error.message : '输入收尾失败' }) }
   }
 
   const createProject = async () => {
     if (!await persistCurrent()) return
-    setProjectId(crypto.randomUUID())
+    inputSessions.invalidate()
+    projectIdRef.current = crypto.randomUUID()
+    setProjectId(projectIdRef.current)
     clearImageCache()
     const name = newProjectName.trim() || '未命名明白纸'
     history.current.clear()
@@ -726,7 +760,9 @@ export default function Home() {
 
   const applyProject = (data: ProjectData) => {
     clearImageCache()
-    setProjectId(data.projectId ?? crypto.randomUUID())
+    inputSessions.invalidate()
+    projectIdRef.current = data.projectId ?? crypto.randomUUID()
+    setProjectId(projectIdRef.current)
     history.current.clear()
     pagesRef.current = data.pages
     setPages(data.pages)
@@ -793,10 +829,12 @@ export default function Home() {
 
   return (
     <div className="ps-workspace flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground"
+      onCompositionStartCapture={() => inputSessions.begin()}
+      onCompositionEndCapture={() => inputSessions.end()}
       onPointerDownCapture={() => { history.current.end(); gestureRef.current = true }}
       onFocusCapture={() => history.current.end()}
       onBlurCapture={() => history.current.end()}
-      onKeyDownCapture={e => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && !(e.target as HTMLElement).closest('input,textarea,select')) keyEditRef.current = true }}
+      onKeyDownCapture={e => { if (!isComposingKey(e.nativeEvent) && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && !(e.target as HTMLElement).closest('input,textarea,select')) keyEditRef.current = true }}
     >
       <Toaster richColors position="bottom-right" />
       {/* 顶栏 */}
@@ -1088,7 +1126,7 @@ export default function Home() {
                       <Input
                         value={presetName}
                         onChange={(e) => setPresetName(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && savePreset()}
+                        onKeyDown={(e) => e.key === 'Enter' && !isComposingKey(e.nativeEvent) && savePreset()}
                         placeholder="预设名称，如：银行红-大字号"
                         className="h-8 flex-1 border-white/15 bg-white/10 text-xs text-white placeholder:text-slate-500"
                       />
@@ -1262,6 +1300,7 @@ export default function Home() {
           >
             {selectedPage ? (
               <CanvasEditor
+                inputSessions={inputSessions}
                 key={selectedPage.id}
                 page={selectedPage}
                 tool={tool}
@@ -1353,10 +1392,7 @@ export default function Home() {
           pages={pages}
           selectedId={selectedPageId}
           onImportFiles={importFiles}
-          onSelect={(id) => {
-            setSelectedPageId(id)
-            setSelectedAnnId(null)
-          }}
+          onSelect={selectStep}
           onMove={movePage}
           onReorder={(sourceId, targetId) => commitPages(prev => {
             const source = prev.find(p => p.id === sourceId)
@@ -1368,7 +1404,7 @@ export default function Home() {
             return next
           })}
           onRemove={removePage}
-          onDuplicate={(id) => { const source = pages.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }}
+          onDuplicate={(id) => { void inputSessions.transition(() => { const source = pagesRef.current.find(p => p.id === id); if (!source) return; const copy = { ...source, id: uid(), name: `${source.name} 副本`, annotations: source.annotations.map(a => ({ ...a, id: uid() })) }; commitPages(prev => { const next = [...prev]; next.splice(next.findIndex(p => p.id === id) + 1, 0, copy); return next }); setSelectedPageId(copy.id); setSelectedAnnId(null) }, blurInput, inputBlocked).catch(() => toast.error('输入收尾失败，请重试')) }}
               />
             </div>
             {selectedPage && <AnnotationList key={selectedPage.id} numberStart={numberStarts.get(selectedPage.id) ?? 0} annotations={selectedPage.annotations} selectedIds={selectedAnnIds} onSelectionChange={setSelectedAnnIds} onChange={annotations => updatePage(selectedPage.id, { annotations })} />}
@@ -1401,7 +1437,7 @@ export default function Home() {
                   </div>
                   <div>
                     <Label className="mb-1.5 block text-xs text-[#bcbcbc]">说明文字</Label>
-                    <StepNotesEditor key={projectId} documentId={selectedPage.id} notes={selectedPage.notes} notesRich={selectedPage.notesRich}
+                    <StepNotesEditor key={projectId} inputSessions={inputSessions} documentId={selectedPage.id} notes={selectedPage.notes} notesRich={selectedPage.notesRich}
                       onChange={(notes, notesRich) => updatePage(selectedPage.id, { notes, notesRich }, true)} />
                   </div>
                 </div>
@@ -1432,7 +1468,7 @@ export default function Home() {
         toast.success('已删除项目、历史版本及独占图片')
       }} />
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{orderedTools.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Shift 点击多选 · Ctrl+A 选择可编辑标注 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
-      <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会保存当前项目，可从本地项目列表重新打开。建议定期下载项目备份。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
+      <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会保存当前项目，可从本地项目列表重新打开。建议定期下载项目备份。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !isComposingKey(e.nativeEvent)) createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
       <ExportPreview
         title={title}
         pages={pages}
