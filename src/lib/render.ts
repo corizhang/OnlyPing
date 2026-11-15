@@ -9,17 +9,21 @@ const imageCache = new Map<string, Promise<HTMLImageElement>>()
 
 export function loadImage(src: string): Promise<HTMLImageElement> {
   let p = imageCache.get(src)
+  if (p) { imageCache.delete(src); imageCache.set(src, p) }
   if (!p) {
     p = new Promise((resolve, reject) => {
       const img = new Image()
       img.onload = () => resolve(img)
-      img.onerror = () => reject(new Error('图片加载失败'))
+      img.onerror = () => { imageCache.delete(src); reject(new Error('图片加载失败')) }
       img.src = src
     })
     imageCache.set(src, p)
+    if (imageCache.size > 12) imageCache.delete(imageCache.keys().next().value!)
   }
   return p
 }
+
+export function clearImageCache() { imageCache.clear() }
 
 /** 把一页（底图 + 全部标注）按原始尺寸渲染成一个画布；numberStart 为全局序号起始值 */
 export async function renderPageToCanvas(page: Page, numberStart = 0): Promise<HTMLCanvasElement> {

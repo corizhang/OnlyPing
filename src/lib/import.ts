@@ -23,6 +23,7 @@ export function fileToPage(file: File): Promise<Page> {
       const img = new Image()
       img.onload = () => {
         try {
+          if (img.naturalWidth * img.naturalHeight > 40_000_000) throw new Error('图片超过 4000 万像素，请缩小后导入')
           const canvas = document.createElement('canvas')
           canvas.width = img.naturalWidth
           canvas.height = img.naturalHeight
@@ -54,7 +55,9 @@ export async function filesToPages(files: Iterable<File>): Promise<FileImportRes
   const allFiles = Array.from(files)
   const images = allFiles.filter((f) => f.type.startsWith('image/'))
   const skipped = allFiles.filter((f) => !f.type.startsWith('image/')).map((f) => f.name)
-  const results = await Promise.allSettled(images.map(fileToPage))
+  // 最多同时解码两张，避免整批原图同时占用内存。
+  const results: PromiseSettledResult<Page>[] = []
+  for (let i = 0; i < images.length; i += 2) results.push(...await Promise.allSettled(images.slice(i, i + 2).map(fileToPage)))
   const pages: Page[] = []
   const failures: FileImportFailure[] = []
   results.forEach((result, index) => {

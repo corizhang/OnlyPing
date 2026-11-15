@@ -1,7 +1,7 @@
 import { TOOL_SHORTCUTS, DEFAULT_TOOL_ORDER } from '@/lib/tools'
 import { EditHistory } from '@/lib/history'
 import PanelResizeHandle from '@/components/PanelResizeHandle'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   PanelRight,
   Keyboard,
@@ -70,10 +70,11 @@ import PageList from '@/components/PageList'
 import { loadAIConfig } from '@/lib/ai'
 import { aiPrivacyScanPage } from '@/lib/ai'
 import { rectCoverage, runConsistencyChecks, type CheckIssue } from '@/lib/check'
-import { idbGet, idbSet, validateAutosave } from '@/lib/db'
+import { idbGet, idbSet, validateAutosave, listLocalProjects, readLocalProject, ProjectConflictError, type LocalProjectEntry, type ProjectData } from '@/lib/db'
+import { useProjectAutosave } from '@/hooks/use-project-autosave'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
-import { downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
+import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
 import { ARROW_DEFAULT_WIDTH, computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_DEFAULT_TILE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
@@ -196,6 +197,10 @@ export default function Home() {
   const [newProjectName, setNewProjectName] = useState('未命名明白纸')
   const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
   const [exportFooter, setExportFooterState] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
+  const [projectId, setProjectId] = useState<string>(() => crypto.randomUUID())
+  const [localProjects, setLocalProjects] = useState<LocalProjectEntry[]>([])
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [pendingText, setPendingText] = useState(false)
   const [saveNote, setSaveNote] = useState('')
   const [storageReady, setStorageReady] = useState(false)
   // 一致性检查
@@ -278,6 +283,7 @@ export default function Home() {
         const restored = validateAutosave(data) ?? validateAutosave(await idbGet<unknown>('backup'))
         if (cancelled) return
         if (restored) {
+          setProjectId(restored.projectId ?? crypto.randomUUID())
           setTitleState(restored.title ?? '明白纸')
           setPages(restored.pages)
           setExportStyleState(restoreExportStyle(restored.exportStyle))
@@ -420,37 +426,41 @@ export default function Home() {
 
   const deletePreset = (id: string) => setPresets((prev) => prev.filter((p) => p.id !== id))
 
-  // 内容变更后短暂防抖保存，另有定时与页面隐藏时保存作为兜底。
-  useEffect(() => {
-    if (!storageReady) return
-    const save = () => {
-      idbSet({ schemaVersion: 1, title, pages, exportStyle, exportFooter, savedAt: Date.now() })
-        .then(() => {
-          localStorage.removeItem('mbz-autosave')
-          setSaveNote(`已自动保存 ${new Date().toLocaleTimeString()}`)
-        })
-        .catch(() => setSaveNote('自动保存失败，请用「保存项目」下载备份'))
-    }
-    const debounce = setTimeout(save, 1000)
-    const timer = setInterval(save, 30000)
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') save()
-    }
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (pages.length) {
-        e.preventDefault()
-        e.returnValue = ''
+  const saveData = useMemo(() => ({ schemaVersion: 1 as const, projectId, title, pages, exportStyle, exportFooter }), [projectId, title, pages, exportStyle, exportFooter])
+  const autosave = useProjectAutosave(saveData, storageReady, pendingText)
+  const persistCurrent = async () => {
+    if (!storageReady) return true
+    try { await idbSet({ ...saveData, savedAt: Date.now() }); return true }
+    catch (err) {
+      if (err instanceof ProjectConflictError) {
+        try {
+          const copyId = crypto.randomUUID()
+          await idbSet({ ...saveData, projectId: copyId, title: `${title}（冲突副本）`, savedAt: Date.now() })
+          setProjectId(copyId)
+          setTitleState(`${title}（冲突副本）`)
+          toast.info('检测到其他页面修改，已将当前内容保存为冲突副本')
+          return true
+        } catch { /* 副本失败时保留当前工作区 */ }
       }
+      toast.error('当前项目保存失败，请先下载项目备份')
+      return false
     }
-    document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => {
-      clearTimeout(debounce)
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('beforeunload', onBeforeUnload)
-    }
-  }, [title, pages, exportStyle, exportFooter, storageReady])
+  }
+  const openLocalProjects = async () => {
+    if (!await persistCurrent()) return
+    try { setLocalProjects(await listLocalProjects()); setLibraryOpen(true) }
+    catch { toast.error('本地项目列表读取失败，请重试') }
+  }
+  const restoreLocal = async (entry: LocalProjectEntry) => {
+    if (!await persistCurrent()) return
+    try {
+      const data = await readLocalProject(entry)
+      if (!data) throw new Error('存档损坏或图片资源缺失')
+      applyProject(data)
+      setLibraryOpen(false)
+      toast.success(entry.revision === undefined ? '已打开本地项目' : '已恢复历史版本')
+    } catch (err) { toast.error(err instanceof Error ? err.message : '恢复失败') }
+  }
 
   // Ctrl+Z / Ctrl+Y 撤销重做
   useEffect(() => {
@@ -692,7 +702,7 @@ export default function Home() {
   }
 
   const saveProject = () => {
-    const blob = new Blob([JSON.stringify({ schemaVersion: 1, title, pages, exportStyle, exportFooter }, null, 2)], {
+    const blob = new Blob([JSON.stringify({ schemaVersion: 1, projectId, title, pages, exportStyle, exportFooter }, null, 2)], {
       type: 'application/json',
     })
     const a = document.createElement('a')
@@ -702,9 +712,11 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000)
   }
 
-  const createProject = () => {
+  const createProject = async () => {
+    if (!await persistCurrent()) return
+    setProjectId(crypto.randomUUID())
+    clearImageCache()
     const name = newProjectName.trim() || '未命名明白纸'
-    if (pages.length) saveProject()
     history.current.clear()
     pagesRef.current = []
     metadataRef.current = { title: name, exportStyle: DEFAULT_EXPORT_STYLE, exportFooter: DEFAULT_EXPORT_FOOTER }
@@ -722,9 +734,28 @@ export default function Home() {
     setNewProjectOpen(false)
   }
 
+  const applyProject = (data: ProjectData) => {
+    clearImageCache()
+    setProjectId(data.projectId ?? crypto.randomUUID())
+    history.current.clear()
+    pagesRef.current = data.pages
+    setPages(data.pages)
+    setSelectedAnnId(null)
+    setStorageReady(true)
+    setTitleState(data.title ?? '明白纸')
+    setExportStyleState(restoreExportStyle(data.exportStyle))
+    setExportFooterState(data.exportFooter ?? DEFAULT_EXPORT_FOOTER)
+    setSelectedPageId(data.pages[0]?.id ?? null)
+    metadataRef.current = { title: data.title, exportStyle: data.exportStyle, exportFooter: data.exportFooter }
+    setTool('select')
+    setZoomMode('fit')
+    setIssues([])
+    setCheckSig(null)
+  }
+
   const loadProject = (file: File) => {
     const reader = new FileReader()
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const data = JSON.parse(String(reader.result))
         const validated = validateAutosave(data)
@@ -732,15 +763,8 @@ export default function Home() {
           alert('项目文件损坏或格式不正确')
           return
         }
-        history.current.clear()
-        pagesRef.current = validated.pages
-        setPages(validated.pages)
-        setSelectedAnnId(null)
-        setStorageReady(true)
-        setTitleState(validated.title ?? '明白纸')
-        setExportStyleState(restoreExportStyle(validated.exportStyle))
-        setExportFooterState(validated.exportFooter ?? DEFAULT_EXPORT_FOOTER)
-        setSelectedPageId(validated.pages[0]?.id ?? null)
+        if (!await persistCurrent()) return
+        applyProject({ ...validated, projectId: crypto.randomUUID() })
       } catch {
         alert('项目文件解析失败')
       }
@@ -842,13 +866,13 @@ export default function Home() {
           >
             <Redo2 className="h-4 w-4" />
           </Button>
-          {saveNote && (
-            <span className={`mr-1 hidden items-center gap-1.5 px-2 py-1 text-[11px] font-medium xl:inline-flex ${saveNote.includes('失败') ? 'text-amber-700' : 'text-emerald-700'}`}>
-              <span className={`size-1.5 rounded-full ${saveNote.includes('失败') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-              {saveNote}
+          {(autosave.status || saveNote) && (
+            <span className={`mr-1 inline-flex max-w-48 truncate items-center gap-1.5 px-2 py-1 text-[11px] font-medium ${(autosave.status || saveNote).includes('失败') ? 'text-amber-700' : 'text-emerald-700'}`}>
+              <span className={`size-1.5 rounded-full ${(autosave.status || saveNote).includes('失败') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+              <button type="button" onClick={autosave.retry} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
             </span>
           )}
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => projectFileRef.current?.click()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem><DropdownMenuItem onClick={() => void openLocalProjects()}><FolderOpen className="mr-2 size-4" />本地项目与历史版本</DropdownMenuItem><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => projectFileRef.current?.click()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <input
             ref={projectFileRef}
             type="file"
@@ -1332,6 +1356,7 @@ export default function Home() {
                 strokeWidth={annStyle.strokeWidth}
                 selectedId={selectedAnnId}
                 editTextRequest={editTextRequest}
+                onTextEditingChange={setPendingText}
                 onSelect={setSelectedAnnId}
                 onChange={(annotations) => updatePage(selectedPage.id, { annotations })}
                 onZoomChange={manualZoom}
@@ -1475,8 +1500,9 @@ export default function Home() {
         />          </div>
         </aside>
       </div>
+      <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}><DialogContent className="max-h-[80vh] overflow-auto"><DialogHeader><DialogTitle>本地项目与历史版本</DialogTitle><DialogDescription>保存在当前浏览器；清除网站数据会删除这些存档，请定期下载项目备份。每个项目保留最近 3 个不同版本。</DialogDescription></DialogHeader><div className="space-y-2">{localProjects.length === 0 && <p>暂无本地项目</p>}{localProjects.map(entry => <button type="button" key={`${entry.key}:${entry.revision ?? 'latest'}`} onClick={() => void restoreLocal(entry)} className="flex w-full items-center justify-between rounded border p-3 text-left hover:bg-muted"><span className="min-w-0"><span className="block truncate text-sm">{entry.title}</span><span className="text-xs text-muted-foreground">{entry.pages} 个步骤 · {new Date(entry.savedAt).toLocaleString()}</span></span><span className="ml-2 shrink-0 text-xs">{entry.revision === undefined ? '打开项目' : '恢复此版本'}</span></button>)}</div></DialogContent></Dialog>
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}><DialogContent><DialogHeader><DialogTitle>快捷键</DialogTitle><DialogDescription>输入文字时不会触发工具切换。</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3 text-sm">{orderedTools.map(t => <div key={t.value} className="flex justify-between border-b pb-2"><span>{t.label}</span><kbd>{t.shortcut}</kbd></div>)}</div><p className="text-sm text-muted-foreground">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+D 复制标注 · Delete 删除 · 方向键微移 · Shift+方向键移动 10px · 空格拖动平移 · Ctrl+滚轮缩放</p></DialogContent></Dialog>
-      <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会自动下载当前项目的 JSON 备份。浏览器自动保存只保留当前项目。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
+      <Dialog open={newProjectOpen} onOpenChange={setNewProjectOpen}><DialogContent><DialogHeader><DialogTitle>新建项目</DialogTitle><DialogDescription>{pages.length ? '创建前会保存当前项目，可从本地项目列表重新打开。建议定期下载项目备份。' : '创建一个空白项目，之后可以添加截图。'}</DialogDescription></DialogHeader><Label htmlFor="new-project-name">项目名称</Label><Input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createProject() }} autoFocus /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNewProjectOpen(false)}>取消</Button><Button onClick={createProject}>创建项目</Button></div></DialogContent></Dialog>
       <ExportPreview
         title={title}
         pages={pages}

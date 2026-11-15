@@ -29,6 +29,7 @@ interface Props {
   strokeWidth: number
   selectedId: string | null
   editTextRequest?: number
+  onTextEditingChange?: (editing: boolean) => void
   onSelect: (id: string | null) => void
   onChange: (annotations: Annotation[]) => void
   onZoomChange?: (zoom: number) => void
@@ -125,7 +126,7 @@ function ResizeHandles({ r, stroke, handleR, onDown }: { r: Rect; stroke: string
   }</>
 }
 
-export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, editTextRequest, onSelect, onChange, onZoomChange, onCrop }: Props) {
+export default function CanvasEditor({ page, tool, color, zoom, numberStart, mosaicTile, numberR, textSize, strokeWidth, selectedId, editTextRequest, onTextEditingChange, onSelect, onChange, onZoomChange, onCrop }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
   const baseImageRef = useRef<HTMLImageElement | null>(null)
@@ -144,6 +145,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
   const [textPos, setTextPos] = useState({ x: 0, y: 0, background: false })
   const [editTarget, setEditTarget] = useState<Extract<Annotation, { kind: 'text' | 'callout' }> | null>(null)
   const [cropRect, setCropRect] = useState<Rect | null>(null)
+  useEffect(() => () => onTextEditingChange?.(false), [onTextEditingChange])
 
   // Ctrl + 滚轮缩放
   useEffect(() => {
@@ -299,7 +301,8 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     }
     setEditingTextId(null)
     setTextDraft('')
-  }, [textDraft, editingTextId, textPos, page, color, textSize, onChange, onSelect, updateAnnotation, setEditingTextId, setTextDraft])
+    onTextEditingChange?.(false)
+  }, [textDraft, editingTextId, textPos, page, color, textSize, onChange, onSelect, onTextEditingChange, updateAnnotation, setEditingTextId, setTextDraft])
 
   const beginTextEdit = useCallback((id: string, text: string) => {
     const target = page.annotations.find(a => a.id === id)
@@ -308,7 +311,8 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
     textCancelRef.current = false
     setTextDraft(text)
     setEditingTextId(id)
-  }, [page, setEditTarget, setTextDraft, setEditingTextId])
+    onTextEditingChange?.(true)
+  }, [page, onTextEditingChange, setEditTarget, setTextDraft, setEditingTextId])
 
   useEffect(() => {
     if (editTextRequest === lastEditRequestRef.current) return
@@ -686,6 +690,7 @@ export default function CanvasEditor({ page, tool, color, zoom, numberStart, mos
               if (e.key === 'Escape') {
                 e.preventDefault()
                 textCancelRef.current = true
+                onTextEditingChange?.(false)
                 if (editTarget?.kind === 'callout' && !editTarget.text) {
                   onChange(page.annotations.filter(a => a.id !== editTarget.id))
                   onSelect(null)
