@@ -57,6 +57,42 @@ fn connect(app: &tauri::AppHandle) -> Result<Connection> {
     })?;
     open(&root.join("onlyping.sqlite3"))
 }
+
+// Recovery must remain usable even if SQLite cannot be opened. No frontend path input.
+#[tauri::command]
+pub fn project_storage_location(app: tauri::AppHandle) -> Result<String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| invalid())?
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[tauri::command]
+pub fn project_storage_open_directory(app: tauri::AppHandle) -> Result<()> {
+    let root = app.path().app_local_data_dir().map_err(|_| invalid())?;
+    std::fs::create_dir_all(&root).map_err(|_| StoreError {
+        code: "directory",
+        message: "无法访问应用数据目录",
+    })?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(root)
+            .spawn()
+            .map_err(|_| StoreError {
+                code: "directory",
+                message: "无法打开资源管理器，请复制数据目录路径手动查看",
+            })?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    Err(StoreError {
+        code: "unsupported",
+        message: "此平台尚不支持自动打开数据目录，请复制路径手动查看",
+    })
+}
 fn get(db: &Connection, key: &str) -> Result<Option<(Value, i64)>> {
     let row: Option<(String, i64)> = db
         .query_row(
@@ -816,6 +852,24 @@ mod tests {
             assert_eq!(
                 read(&mut b, "autosave").unwrap()["value"]["title"],
                 "新窗口修改"
+            );
+            a.execute_batch("BEGIN IMMEDIATE").unwrap();
+            b.busy_timeout(std::time::Duration::from_millis(10))
+                .unwrap();
+            assert_eq!(
+                save(&mut b, project("a", "被锁定的写入", &key), Some(2), vec![])
+                    .unwrap_err()
+                    .code,
+                "database"
+            );
+            assert_eq!(
+                read(&mut b, "autosave").unwrap()["value"]["title"],
+                "新窗口修改"
+            );
+            a.execute_batch("ROLLBACK").unwrap();
+            assert_eq!(
+                save(&mut b, project("a", "解锁重试成功", &key), Some(2), vec![]).unwrap(),
+                3
             );
             a.execute_batch("PRAGMA user_version=99").unwrap();
         }

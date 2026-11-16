@@ -43,6 +43,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
@@ -67,13 +69,16 @@ import { rectCoverage, runConsistencyChecks, type CheckIssue } from '@/lib/check
 import { idbGet, idbSet, validateAutosave, listLocalProjects, readLocalProject, ProjectConflictError, type LocalProjectEntry, type ProjectData } from '@/lib/db'
 import { useProjectAutosave } from '@/hooks/use-project-autosave'
 import ProjectLibrary from '@/components/ProjectLibrary'
+import StorageRecovery from '@/components/StorageRecovery'
 import { deleteLocalProject } from '@/lib/db'
 import { storageErrorMessage } from '@/lib/storage-errors'
 import { setRecoveryProject } from '@/lib/crash-recovery'
 import { startEditorPhase } from '@/lib/editor-performance'
 import { InputSettlement, isComposingKey } from '@/lib/input-settlement'
-import { hasActiveFileOperation, isDesktop, openProjectFile, saveFile } from '@/lib/files'
+import { createNativeProjectSession, hasActiveFileOperation, isDesktop, saveFile, withNativeOperation } from '@/lib/files'
+import { projectFilename, type ProjectFileSource } from '@/lib/project-files'
 import { useDesktopClose } from '@/hooks/use-desktop-close'
+import { useProjectFileShortcuts } from '@/hooks/use-project-file-shortcuts'
 import { filesToPages } from '@/lib/import'
 import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
@@ -198,6 +203,10 @@ export default function Home() {
   const [exportFooter, setExportFooterState] = useState<ExportFooter>(DEFAULT_EXPORT_FOOTER)
   const [projectId, setProjectId] = useState<string>(() => crypto.randomUUID())
   const projectIdRef = useRef(projectId)
+  const [projectFiles] = useState(createNativeProjectSession)
+  const [projectFileRevision, setProjectFileRevision] = useState(0)
+  const [projectFileBusy, setProjectFileBusy] = useState(false)
+  const projectFileTask = useRef(false)
   useEffect(() => { projectIdRef.current = projectId }, [projectId])
   const [compositionPending, setCompositionPending] = useState(false)
   const [inputSessions] = useState(() => new InputSettlement(setCompositionPending))
@@ -218,6 +227,12 @@ export default function Home() {
   const [pendingText, setPendingText] = useState(false)
   const [saveNote, setSaveNote] = useState('')
   const [storageReady, setStorageReady] = useState(false)
+  const [storageLoading, setStorageLoading] = useState(true)
+  const [storageError, setStorageError] = useState<unknown>(null)
+  const [storageAttempt, setStorageAttempt] = useState(0)
+  const [recoveryOpen, setRecoveryOpen] = useState(false)
+  const initialWorkspace = useRef<string | null>(null)
+  const workspaceEdited = useRef(false)
   // 一致性检查
   const [issues, setIssues] = useState<CheckIssue[]>([])
   const [checkOpen, setCheckOpen] = useState(false)
@@ -294,10 +309,20 @@ export default function Home() {
   // 从当前平台存储恢复；结构损坏和读取异常均尝试独立恢复副本。
   useEffect(() => {
     let cancelled = false
+    const workspace = () => JSON.stringify({ projectId: projectIdRef.current, ...snapshot() })
+    initialWorkspace.current ??= workspace()
+    setStorageLoading(true)
     ;(async () => {
       try {
         const restored = await readRecoverableProject(key => idbGet<unknown>(key), validateAutosave)
         if (cancelled) return
+        setStorageError(null)
+        // A delayed read or retry must not replace edits made after startup.
+        if (workspaceEdited.current || inputSessions.awaitingComposition || workspace() !== initialWorkspace.current) {
+          setSaveNote('本地连接已恢复，保留当前编辑内容')
+          setStorageReady(true)
+          return
+        }
         if (restored) {
           setProjectId(restored.projectId ?? crypto.randomUUID())
           setTitleState(restored.title ?? '明白纸')
@@ -325,22 +350,26 @@ export default function Home() {
             setSelectedPageId(legacy.pages[0]?.id ?? null)
             setSaveNote('已从旧版存储恢复项目')
           } else {
-            setSaveNote('检测到旧版存档但数据损坏，未能恢复')
+            throw new Error('旧版存档损坏，自动保存已暂停；请先导出旧存档恢复包')
           }
-          // 旧存档保留，直到当前平台存储成功写入后再清理。
+          // 保留旧存档供恢复导出，不因其他项目保存成功而删除。
         }
         setStorageReady(true)
-      } catch {
+      } catch (error) {
         if (!cancelled) {
+          setStorageError(error)
+          setRecoveryOpen(true)
           setSaveNote('读取自动存档失败，自动保存已暂停，请打开项目备份')
           setStorageReady(false)
         }
-      }
+      } finally { if (!cancelled) setStorageLoading(false) }
     })()
     return () => {
       cancelled = true
     }
-  }, [])
+  // Retry intentionally reads refs and never uses stale render snapshots.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageAttempt])
 
   // 一致性检查
   const runChecks = () => {
@@ -460,6 +489,15 @@ export default function Home() {
   const saveData = useMemo(() => ({ schemaVersion: 1 as const, projectId, title, pages, exportStyle, exportFooter }), [projectId, title, pages, exportStyle, exportFooter])
   useEffect(() => { if (storageReady) setRecoveryProject(saveData) }, [storageReady, saveData])
   const autosave = useProjectAutosave(saveData, storageReady, pendingText || compositionPending)
+  const fileBinding = projectFiles.binding(projectId)
+  const fileDirty = !!fileBinding && (projectFiles.dirty(projectId, saveData) || pendingText || compositionPending)
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (projectFiles.binding(projectId) && (projectFiles.dirty(projectId, saveData) || pendingText || compositionPending)) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [projectFiles, projectId, saveData, pendingText, compositionPending, projectFileRevision])
   const persistCurrent = async () => {
     if (!storageReady) return true
     const sourceProjectId = projectIdRef.current
@@ -492,9 +530,11 @@ export default function Home() {
   }
   useDesktopClose(async () => {
     if (exporting || hasActiveFileOperation()) { toast.info('请先完成文件操作或配置保存，再关闭窗口'); return false }
-    if (storageReady && await persistCurrent()) return true
+    const persisted = storageReady && await persistCurrent()
+    const current = { schemaVersion: 1 as const, projectId: projectIdRef.current, ...snapshot() }
+    if (persisted && !projectFiles.dirty(current.projectId, current)) return true
     const { confirm } = await import('@tauri-apps/plugin-dialog')
-    return confirm('本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
+    return confirm(persisted ? '当前修改已自动保存到本机，但关联的 JSON 文件尚未更新。可返回按 Ctrl+S 保存文件，或关闭后从本地项目恢复。仍然关闭？' : '本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
       title: 'OnlyPing · 未保存内容', kind: 'warning', okLabel: '仍然关闭', cancelLabel: '留在编辑器',
     })
   }, () => toast.error('关闭前保存失败，请先备份项目后重试'))
@@ -748,6 +788,27 @@ export default function Home() {
     } catch (error) { if (!isTaskCancelled(error)) toast.error('项目备份失败，请保留当前页面并重试', { description: error instanceof Error ? error.message : '输入收尾失败' }) }
   }
 
+  const runProjectFileOperation = async (task: () => Promise<void>) => {
+    if (projectFileTask.current) return
+    projectFileTask.current = true; setProjectFileBusy(true)
+    try { await withNativeOperation(task) }
+    catch (error) { if (!isTaskCancelled(error)) toast.error('项目文件操作失败', { description: error instanceof Error ? error.message : '请保留当前编辑内容并重试' }) }
+    finally { projectFileTask.current = false; setProjectFileBusy(false) }
+  }
+
+  const saveProjectFile = async (saveAs = false) => {
+    if (!isDesktop()) { await saveProject(); return }
+    await runProjectFileOperation(async () => {
+      const sourceId = projectIdRef.current
+      if (!await inputSessions.settle(blurInput)) { inputBlocked(); return }
+      if (projectIdRef.current !== sourceId) return
+      const data = { schemaVersion: 1 as const, projectId: sourceId, ...snapshot() }
+      if (!validateAutosave(data)) throw new Error('当前项目包含无效数据，未覆盖项目文件；请先另存一份恢复备份')
+      const path = await projectFiles.save(data, saveAs)
+      if (path) { setProjectFileRevision(n => n + 1); toast.success(`项目文件已保存：${projectFilename(path)}`) }
+    })
+  }
+
   const createProject = async () => {
     if (!await persistCurrent()) return
     inputSessions.invalidate()
@@ -793,30 +854,31 @@ export default function Home() {
     setCheckSig(null)
   }
 
-  const loadProject = (file: File) => {
-    const reader = new FileReader()
-    reader.onload = async () => {
+  const loadProject = async (file: File, source?: ProjectFileSource) => {
+    const sourceId = projectIdRef.current
       try {
-        const data = JSON.parse(String(reader.result))
+        const data = JSON.parse((await file.text()).replace(/^\uFEFF/, ''))
         const validated = validateAutosave(data)
         if (!validated) {
-          alert('项目文件损坏或格式不正确')
+          toast.error('项目文件损坏或格式不正确，未切换工作区')
           return
         }
+        if (sourceId !== projectIdRef.current) return
         if (!await persistCurrent()) return
-        applyProject({ ...validated, projectId: crypto.randomUUID() })
+        const opened = { ...validated, exportStyle: restoreExportStyle(validated.exportStyle), schemaVersion: 1 as const, projectId: crypto.randomUUID() }
+        applyProject(opened)
+        if (source) { projectFiles.bind(opened.projectId, source, opened); setProjectFileRevision(n => n + 1) }
+        toast.success(source ? '已打开项目文件；本机存档与文件保存分别管理' : '已导入为独立本地项目')
       } catch {
-        alert('项目文件解析失败')
+        toast.error('项目文件解析失败，原工作区保留')
       }
-    }
-    reader.readAsText(file)
   }
 
   const chooseProject = async () => {
     if (!isDesktop()) { projectFileRef.current?.click(); return }
-    try { const file = await openProjectFile(); if (file) loadProject(file) }
-    catch (error) { toast.error('项目读取失败', { description: error instanceof Error ? error.message : '请重试' }) }
+    await runProjectFileOperation(async () => { const source = await projectFiles.open(); if (source) await loadProject(source.file, source) })
   }
+  useProjectFileShortcuts(saveProjectFile, chooseProject)
 
   const [toolOrder, setToolOrder] = useState<Tool[]>(() => {
     const saved = loadJSON<Tool[]>('mbz-tool-order', (v): v is Tool[] => Array.isArray(v) && v.every(x => typeof x === 'string'))
@@ -849,12 +911,15 @@ export default function Home() {
 
   return (
     <div className="ps-workspace flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground"
-      onCompositionStartCapture={() => inputSessions.begin()}
+      onInputCapture={() => { workspaceEdited.current = true }}
+      onKeyDownCapture={event => {
+        if (!isComposingKey(event.nativeEvent) && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !(event.target as HTMLElement).closest('input,textarea,select')) keyEditRef.current = true
+      }}
+      onCompositionStartCapture={() => { workspaceEdited.current = true; inputSessions.begin() }}
       onCompositionEndCapture={() => inputSessions.end()}
       onPointerDownCapture={() => { history.current.end(); gestureRef.current = true }}
       onFocusCapture={() => history.current.end()}
       onBlurCapture={() => history.current.end()}
-      onKeyDownCapture={e => { if (!isComposingKey(e.nativeEvent) && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && !(e.target as HTMLElement).closest('input,textarea,select')) keyEditRef.current = true }}
     >
       <Toaster richColors position="bottom-right" />
       {/* 顶栏 */}
@@ -901,10 +966,25 @@ export default function Home() {
           {(autosave.status || saveNote) && (
             <span className={`mr-1 inline-flex max-w-48 truncate items-center gap-1.5 px-2 py-1 text-[11px] font-medium ${(autosave.status || saveNote).includes('失败') ? 'text-amber-700' : 'text-emerald-700'}`}>
               <span className={`size-1.5 rounded-full ${(autosave.status || saveNote).includes('失败') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-              <button type="button" onClick={autosave.retry} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
+              <button type="button" onClick={() => setRecoveryOpen(true)} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
             </span>
           )}
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem><DropdownMenuItem onClick={() => void openLocalProjects()}><FolderOpen className="mr-2 size-4" />本地项目与历史版本</DropdownMenuItem><DropdownMenuItem onClick={saveProject}><Save className="mr-2 size-4" />下载项目备份</DropdownMenuItem><DropdownMenuItem onClick={() => void chooseProject()}><FolderOpen className="mr-2 size-4" />打开项目</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          {isDesktop() && <span className="max-w-48 truncate text-[11px] text-muted-foreground" title={fileBinding ? `${fileBinding.path}；${fileDirty ? '关联文件待保存' : '已与文件同步'}。文件关联仅限当前会话。` : '本机自动存档与 JSON 文件分别保存；Ctrl+S 可选择项目 JSON 文件'}>{fileBinding ? `${fileDirty ? '● ' : ''}${projectFilename(fileBinding.path)}` : '未关联项目文件'}</span>}
+          <DropdownMenu onOpenChange={open => { if (open) void listLocalProjects().then(setLocalProjects).catch(() => setLocalProjects([])) }}>
+            <DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={projectFileBusy} onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem>
+              <DropdownMenuItem disabled={projectFileBusy} onClick={() => void chooseProject()}><FolderOpen className="mr-2 size-4" />打开项目文件… <span className="ml-auto pl-3 text-xs text-muted-foreground">Ctrl+O</span></DropdownMenuItem>
+              <DropdownMenuItem disabled={projectFileBusy} onClick={() => void saveProjectFile()}><Save className="mr-2 size-4" />{isDesktop() ? '保存项目文件' : '下载项目 JSON'} <span className="ml-auto pl-3 text-xs text-muted-foreground">Ctrl+S</span></DropdownMenuItem>
+              {isDesktop() && <DropdownMenuItem disabled={projectFileBusy} onClick={() => void saveProjectFile(true)}>项目文件另存为… <span className="ml-auto pl-3 text-xs text-muted-foreground">Ctrl+Shift+S</span></DropdownMenuItem>}
+              <DropdownMenuItem disabled={projectFileBusy} onClick={saveProject}>另存一份备份…</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>最近本地项目</DropdownMenuLabel>
+              {localProjects.filter(entry => entry.revision === undefined && entry.key !== `project:${projectId}`).slice(0, 5).map(entry => <DropdownMenuItem key={entry.key} disabled={projectFileBusy} onClick={() => void restoreLocal(entry)}><span className="max-w-64 truncate">{entry.title}</span></DropdownMenuItem>)}
+              <DropdownMenuItem disabled={projectFileBusy} onClick={() => void openLocalProjects()}>本地项目与历史版本…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setRecoveryOpen(true)}><CircleAlert className="mr-2 size-4" />本地存储与恢复</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <input
             ref={projectFileRef}
             type="file"
@@ -1569,6 +1649,10 @@ export default function Home() {
           </div>
         </DialogContent>
       </Dialog>
+      <StorageRecovery open={recoveryOpen} onOpenChange={setRecoveryOpen} error={storageError ?? autosave.error} loading={storageLoading} onRetry={() => {
+        if (storageError || !storageReady) setStorageAttempt(n => n + 1)
+        else autosave.retry()
+      }} onBackup={saveProject} />
     </div>
   )
 }

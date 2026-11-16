@@ -20,11 +20,32 @@ function nativeStore() {
 
 /** One readonly transaction preserves aliases, history, tombstones and image references. */
 export async function readIndexedDBSnapshot(): Promise<LegacySnapshot> {
-  const db = await openDB()
+  // Do not upgrade a v1 source or create a database just to export/recover it.
+  const db = await new Promise<IDBDatabase | null>((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME)
+    let fresh = false, settled = false
+    req.onupgradeneeded = () => { fresh = true; req.transaction?.abort() }
+    req.onerror = () => { if (settled) return; settled = true; if (fresh) resolve(null); else reject(req.error ?? new Error('旧存档读取失败')) }
+    req.onblocked = () => { settled = true; reject(new Error('请关闭其他 OnlyPing 页面后重试读取旧存档')) }
+    req.onsuccess = () => {
+      if (settled) { req.result.close(); return }
+      settled = true
+      req.result.onversionchange = () => req.result.close()
+      resolve(req.result)
+    }
+  })
+  if (!db) return { records: [], assets: [] }
+  if (!db.objectStoreNames.contains(STORE)) {
+    const empty = db.objectStoreNames.length === 0
+    db.close()
+    if (empty) return { records: [], assets: [] }
+    throw new Error('旧存档结构无法识别，原数据保留，未执行迁移')
+  }
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE, 'images'], 'readonly')
+    const tx = db.transaction(db.objectStoreNames.contains('images') ? [STORE, 'images'] : [STORE], 'readonly')
     const records: LegacySnapshot['records'] = [], assets: LegacySnapshot['assets'] = []
     for (const [name, destination] of [[STORE, records], ['images', assets]] as const) {
+      if (!db.objectStoreNames.contains(name)) continue
       const cursor = tx.objectStore(name).openCursor()
       cursor.onsuccess = () => {
         const row = cursor.result

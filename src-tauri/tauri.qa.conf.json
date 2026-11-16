@@ -1,0 +1,7 @@
+{
+  "identifier": "io.github.corizhang.onlyping.qa",
+  "productName": "OnlyPing QA",
+  "app": {
+    "windows": [{ "label": "main", "title": "OnlyPing QA · 独立验收", "width": 1440, "height": 960, "minWidth": 1000, "minHeight": 700, "dragDropEnabled": false, "resizable": true }]
+  }
+}

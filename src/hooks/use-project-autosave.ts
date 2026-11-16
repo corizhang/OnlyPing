@@ -5,8 +5,18 @@ import { storageErrorMessage } from '@/lib/storage-errors'
 export function useProjectAutosave(data: ProjectData, ready: boolean, pendingText = false) {
   const [status, setStatus] = useState('')
   const [retry, setRetry] = useState(0)
+  const [error, setError] = useState<unknown>(null)
   const saved = useRef<ProjectData | null>(null)
   const dirty = useRef(false)
+  // Loading/storage failures must not disable the warning for newly edited content.
+  useEffect(() => {
+    dirty.current = pendingText || saved.current !== data
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (dirty.current) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [data, pendingText])
   useEffect(() => {
     if (!ready) return
     let active = true
@@ -24,25 +34,21 @@ export function useProjectAutosave(data: ProjectData, ready: boolean, pendingTex
           saved.current = data
           dirty.current = pendingText
           setStatus(`已保存 ${new Date().toLocaleTimeString()}`)
-          try { localStorage.removeItem('mbz-autosave') } catch { /* IndexedDB 已成功 */ }
+          setError(null)
+          // Keep legacy source for recovery, including damaged or not-yet-migrated data.
         }
       } catch (err) {
-        if (active) setStatus(`保存失败：${storageErrorMessage(err)}`)
+        if (active) { setStatus(`保存失败：${storageErrorMessage(err)}`); setError(err) }
       } finally { inFlight = false }
     }
     const timer = setTimeout(save, 1000)
     const onVisibility = () => { if (document.visibilityState === 'hidden') void save() }
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (dirty.current) { event.preventDefault(); event.returnValue = '' }
-    }
     document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
       active = false
       clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('beforeunload', onBeforeUnload)
     }
   }, [data, ready, retry, pendingText])
-  return { status: pendingText ? '正在编辑文字，结束后保存' : status, retry: () => setRetry(n => n + 1) }
+  return { error, status: pendingText ? '正在编辑文字，结束后保存' : status, retry: () => setRetry(n => n + 1) }
 }

@@ -10,6 +10,10 @@ fn main() {
             "project_storage_delete",
             "project_storage_missing_assets",
             "project_storage_list",
+            "project_storage_location",
+            "project_storage_open_directory",
+            "project_file_version",
+            "project_file_write",
         ]),
     ))
     .expect("failed to build application permissions")

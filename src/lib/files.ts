@@ -1,10 +1,28 @@
 import { isTauri } from '@tauri-apps/api/core'
 import { createNativeFiles } from './native-files.ts'
+import { createProjectFileSession } from './project-files.ts'
 
 export const isDesktop = () => typeof window !== 'undefined' && isTauri()
 let native: Promise<ReturnType<typeof createNativeFiles>> | null = null
 let active = 0
 export const hasActiveFileOperation = () => active > 0
+async function projectFileInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  try { return await (await import('@tauri-apps/api/core')).invoke<T>(command, args) }
+  catch (error) { throw new Error((error as { message?: string })?.message ?? '项目文件操作失败，请保留当前内容并另存为') }
+}
+export function createNativeProjectSession() {
+  return createProjectFileSession({
+    open: async () => {
+      const path = await (await import('@tauri-apps/plugin-dialog')).open({ title: '打开 OnlyPing 项目文件', multiple: false, filters: [{ name: 'OnlyPing 项目', extensions: ['json'] }] })
+      if (Array.isArray(path)) throw new Error('请选择单个项目文件')
+      return path
+    },
+    save: async defaultPath => (await import('@tauri-apps/plugin-dialog')).save({ title: '保存 OnlyPing 项目文件', defaultPath, filters: [{ name: 'OnlyPing 项目', extensions: ['json'] }] }),
+    read: async path => (await import('@tauri-apps/plugin-fs')).readFile(path),
+    version: path => projectFileInvoke<string | null>('project_file_version', { path }),
+    write: (path, contents, expectedHash) => projectFileInvoke<string>('project_file_write', { path, contents, expectedHash }),
+  })
+}
 /** Include settings writes in the desktop close guard. */
 export async function withNativeOperation<T>(task: () => Promise<T>): Promise<T> {
   active++

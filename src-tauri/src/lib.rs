@@ -10,7 +10,11 @@ pub fn run() {
             project_storage::project_storage_read,
             project_storage::project_storage_delete,
             project_storage::project_storage_missing_assets,
-            project_storage::project_storage_list
+            project_storage::project_storage_list,
+            project_storage::project_storage_location,
+            project_storage::project_storage_open_directory,
+            project_files::project_file_version,
+            project_files::project_file_write
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -28,4 +32,5 @@ pub fn run() {
         .expect("error while building tauri application");
 }
 mod credentials;
+mod project_files;
 mod project_storage;

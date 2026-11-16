@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { IDBObjectStore } from 'fake-indexeddb'
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
@@ -13,6 +13,33 @@ const image = 'data:image/png;base64,aGVsbG8='
 const project = (projectId, title, savedAt = 1) => ({ schemaVersion: 1, projectId, title, savedAt,
   pages: [{ id: 'page', name: '截图', notes: '', image, width: 100, height: 100, annotations: [] }] })
 const open = () => new Promise((resolve, reject) => { const req = indexedDB.open('mingbai-tool', 2); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error) })
+
+test('readonly migration of a version-1 source never upgrades its schema', async () => {
+  const previous = globalThis.indexedDB
+  globalThis.indexedDB = new IDBFactory()
+  try {
+    const db = await new Promise(resolve => {
+      const req = indexedDB.open('mingbai-tool', 1)
+      req.onupgradeneeded = () => req.result.createObjectStore('projects')
+      req.onsuccess = () => resolve(req.result)
+    })
+    await new Promise(resolve => { const tx = db.transaction('projects', 'readwrite'); tx.objectStore('projects').put(project('v1', '旧版本'), 'autosave'); tx.oncomplete = resolve })
+    db.close()
+    const snapshot = await readIndexedDBSnapshot()
+    assert.equal(snapshot.records[0][1].title, '旧版本')
+    assert.equal(snapshot.assets.length, 0)
+    assert.equal((await indexedDB.databases())[0].version, 1)
+  } finally { globalThis.indexedDB = previous }
+})
+
+test('readonly recovery of an absent source does not leave an empty database behind', async () => {
+  const previous = globalThis.indexedDB
+  globalThis.indexedDB = new IDBFactory()
+  try {
+    assert.deepEqual(await readIndexedDBSnapshot(), { records: [], assets: [] })
+    assert.deepEqual(await indexedDB.databases(), [])
+  } finally { globalThis.indexedDB = previous }
+})
 
 test('migration snapshot preserves source aliases, history, tombstones and assets without writes', async () => {
   const value = project('migration-source', '迁移原始')
