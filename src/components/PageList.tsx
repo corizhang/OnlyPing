@@ -14,16 +14,19 @@ interface Props {
   onRemove: (id: string) => void
   onDuplicate: (id: string) => void
   onReorder: (sourceId: string, targetId: string) => void
+  onExportImage?: (id: string) => void
+  exportBusy?: boolean
 }
 
-export default function PageList({ pages, selectedId, onSelect, onImportFiles, onMove, onRemove, onDuplicate, onReorder }: Props) {
+export default function PageList({ pages, selectedId, onSelect, onImportFiles, onMove, onRemove, onDuplicate, onReorder, onExportImage, exportBusy }: Props) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<StepFilter>('all')
   const visiblePages = useMemo(() => pages.map((page, index) => ({ page, index })).filter(({ page }) => matchesStep(page, query, filter)), [pages, query, filter])
-  const actions = useRef({ onSelect, onReorder })
-  useLayoutEffect(() => { actions.current = { onSelect, onReorder } }, [onSelect, onReorder])
+  const actions = useRef({ onSelect, onReorder, onExportImage })
+  useLayoutEffect(() => { actions.current = { onSelect, onReorder, onExportImage } }, [onSelect, onReorder, onExportImage])
   const selectRow = useCallback((id: string) => actions.current.onSelect(id), [])
   const reorderRows = useCallback((source: string, target: string) => actions.current.onReorder(source, target), [])
+  const exportRow = useCallback((id: string) => actions.current.onExportImage?.(id), [])
   const fileRef = useRef<HTMLInputElement>(null)
   const selectedIndex = pages.findIndex((page) => page.id === selectedId)
   const selectedPage = pages[selectedIndex]
@@ -60,7 +63,7 @@ export default function PageList({ pages, selectedId, onSelect, onImportFiles, o
           </div>
         )}
         {visiblePages.map(({ page, index }) => <PageListRow key={page.id} page={page} index={index} selected={page.id === selectedId}
-          sortable={!query.trim() && filter === 'all'} onSelect={selectRow} onReorder={reorderRows} />)}
+          sortable={!query.trim() && filter === 'all'} onSelect={selectRow} onReorder={reorderRows} onExportImage={onExportImage ? exportRow : undefined} exportBusy={exportBusy} />)}
       </div>
 
       <div className="flex h-11 shrink-0 items-center justify-between border-t border-white/10 bg-[#202020] px-2">

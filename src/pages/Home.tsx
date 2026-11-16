@@ -62,6 +62,7 @@ import AsyncAIPanel from '@/components/AsyncAIPanel'
 import CanvasEditor from '@/components/CanvasEditor'
 import StepNotesEditor from '@/components/StepNotesEditor'
 import ExportPreview from '@/components/ExportPreview'
+import ImageExportDialog from '@/components/ImageExportDialog'
 import PageList from '@/components/PageList'
 import { loadAIConfig, restoreAIConfig } from '@/lib/ai-config'
 import { readRecoverableProject } from '@/lib/project-recovery'
@@ -80,8 +81,9 @@ import { projectFilename, type ProjectFileSource } from '@/lib/project-files'
 import { useDesktopClose } from '@/hooks/use-desktop-close'
 import { useProjectFileShortcuts } from '@/hooks/use-project-file-shortcuts'
 import { filesToPages } from '@/lib/import'
-import { exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
-import { clearImageCache, downloadPageImage, loadImage, preparePageForAI } from '@/lib/render'
+import { exportAnnotatedImages, exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
+import { imageExportWarnings, planImageExport, type ImageExportSelection } from '@/lib/image-export'
+import { clearImageCache, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
 import { computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
@@ -197,6 +199,7 @@ export default function Home() {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', blur) }
   }, [])
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [imageExportOpen, setImageExportOpen] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectName, setNewProjectName] = useState('未命名明白纸')
   const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
@@ -727,13 +730,39 @@ export default function Home() {
     })
   }
 
+  const doImageExport = async (selection: ImageExportSelection) => {
+    setPreviewOpen(false)
+    try {
+      await exportTask.run(async task => {
+        const sourceId = projectIdRef.current
+        await taskCheckpoint(task, '正在收尾文字编辑', 0, 1)
+        if (!await inputSessions.settle(blurInput)) { inputBlocked(); return }
+        checkTask(task)
+        if (sourceId !== projectIdRef.current) throw new DOMException('项目已切换', 'AbortError')
+        const jobs = planImageExport(pagesRef.current, selection)
+        const warnings = imageExportWarnings(jobs)
+        if (warnings.length && !window.confirm(`${warnings.slice(0, 3).join('\n')}${warnings.length > 3 ? `\n另有 ${warnings.length - 3} 张图片存在相同问题` : ''}\n\n建议先显示保护标注。仍按当前画布导出吗？`)) return
+        checkTask(task)
+        const exportTitle = metadataRef.current.title
+        setImageExportOpen(false)
+        await exportAnnotatedImages(exportTitle, jobs, task)
+        checkTask(task)
+        toast.success(`已导出 ${jobs.length} 张标注图片${jobs.length > 1 ? '（ZIP）' : '（PNG）'}`)
+      })
+    } catch (error) {
+      if (isTaskCancelled(error)) toast.info('已取消图片导出')
+      else toast.error('标注图片导出失败', { description: error instanceof Error ? error.message : '请重试或分批导出' })
+    }
+  }
+
   const doExport = async (kind: 'docx' | 'pdf' | 'long' | 'page') => {
+    if (kind === 'page') { await doImageExport({ scope: 'current', currentId: selectedPageId }); return }
     setPreviewOpen(false)
     try {
       await exportTask.run(async task => {
         await taskCheckpoint(task, '正在准备导出', 0, pages.length)
         // 整份导出前先跑全量检查：确定性检查 +（可选）AI 隐私扫描；有警告需用户确认
-        if (kind !== 'page') {
+        {
           const found = runConsistencyChecks(title, pages, exportFooter)
           let all = found
           if (autoAiScan && (aiConfig.apiKey || aiConfig.demo) && pages.length) {
@@ -768,7 +797,6 @@ export default function Home() {
         if (kind === 'docx') await exportDocx(title, pages, exportStyle, exportFooter, stepImageScale, task)
         else if (kind === 'pdf') await exportPdf(title, pages, exportStyle, exportFooter, stepImageScale, task)
         else if (kind === 'long') await exportLongImage(title, pages, exportStyle, exportFooter, stepImageScale, task)
-        else if (selectedPage) await downloadPageImage(selectedPage, numberStarts.get(selectedPage.id) ?? 0, task)
       })
     } catch (err) {
       if (isTaskCancelled(err)) toast.info('已取消导出')
@@ -922,6 +950,7 @@ export default function Home() {
       onBlurCapture={() => history.current.end()}
     >
       <Toaster richColors position="bottom-right" />
+      {imageExportOpen && <ImageExportDialog pages={pages} currentId={selectedPageId} busy={exporting} onClose={() => { if (exporting) exportTask.cancel(); setImageExportOpen(false) }} onExport={selection => void doImageExport(selection)} />}
       {/* 顶栏 */}
       <header className="z-20 flex h-12 shrink-0 items-center justify-between border-b border-white/10 bg-[#292929] px-3">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -1135,6 +1164,7 @@ export default function Home() {
                 <ImageIcon className="mr-2 h-4 w-4" />
                 当前页标注图（PNG）
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setImageExportOpen(true)}><ImageIcon className="mr-2 h-4 w-4" />导出标注图片…（指定 / 全部）</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -1493,6 +1523,8 @@ export default function Home() {
           selectedId={selectedPageId}
           onImportFiles={importFiles}
           onSelect={selectStep}
+          onExportImage={id => void doImageExport({ scope: 'selected', ids: [id] })}
+          exportBusy={exporting}
           onMove={movePage}
           onReorder={(sourceId, targetId) => commitPages(prev => {
             const source = prev.find(p => p.id === sourceId)

@@ -1,5 +1,11 @@
 import { checkTask } from './render-task.ts'
 export { footerText } from './export-common.ts'
+export async function exportAnnotatedImages(...args: Parameters<typeof import('./export-annotated-images').exportAnnotatedImages>) {
+  checkTask(args[2])
+  const engine = await import('./export-annotated-images')
+  checkTask(args[2])
+  return engine.exportAnnotatedImages(...args)
+}
 
 /** Lightweight entry points. Load format-specific engines only on demand. */
 export async function exportDocx(...args: Parameters<typeof import('./export-word').exportDocx>) {
