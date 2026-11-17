@@ -21,10 +21,11 @@ export async function taskCheckpoint(task: RenderTask, phase: string, completed:
   checkTask(task)
 }
 export function releaseCanvas(canvas: HTMLCanvasElement) { canvas.width = 0; canvas.height = 0 }
-export async function canvasBlob(canvas: HTMLCanvasElement, task: RenderTask = {}): Promise<Blob> {
+export async function canvasBlob(canvas: HTMLCanvasElement, task: RenderTask = {}, type = 'image/png', quality?: number): Promise<Blob> {
   checkTask(task)
-  const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('图片编码失败'))))
+  const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('图片编码失败')), type, quality))
   checkTask(task)
+  if (blob.type !== type) throw new Error('当前环境不支持所选图片编码，请使用 PNG')
   return blob
 }
 

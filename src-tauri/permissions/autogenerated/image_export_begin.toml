@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-image-export-begin"
+description = "Enables the image_export_begin command without any pre-configured scope."
+commands.allow = ["image_export_begin"]
+
+[[permission]]
+identifier = "deny-image-export-begin"
+description = "Denies the image_export_begin command without any pre-configured scope."
+commands.deny = ["image_export_begin"]

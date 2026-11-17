@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
-import { exportDocx, exportPdf, exportLongImage, renderDocument } from '../src/lib/exporters.ts'
+import { exportDocx, exportPdf, exportLongImage, renderDocument, renderAnnotatedImagePreview } from '../src/lib/exporters.ts'
 import { isTaskCancelled } from '../src/lib/render-task.ts'
 
 test('pre-cancelled exports reject before loading any browser-only engine', async () => {
@@ -11,6 +11,7 @@ test('pre-cancelled exports reject before loading any browser-only engine', asyn
     await assert.rejects(run('x', [], undefined, undefined, 1, task), isTaskCancelled)
   }
   await assert.rejects(renderDocument('x', [], {}, {}, 'pdf', 1, task), isTaskCancelled)
+  await assert.rejects(renderAnnotatedImagePreview({}, task), isTaskCancelled)
 })
 
 test('cancellation during module loading prevents the newly loaded engine from running', async () => {

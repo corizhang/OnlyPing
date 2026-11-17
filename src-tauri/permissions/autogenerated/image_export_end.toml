@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-image-export-end"
+description = "Enables the image_export_end command without any pre-configured scope."
+commands.allow = ["image_export_end"]
+
+[[permission]]
+identifier = "deny-image-export-end"
+description = "Denies the image_export_end command without any pre-configured scope."
+commands.deny = ["image_export_end"]

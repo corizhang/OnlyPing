@@ -7,7 +7,7 @@ const host = overrides => ({ save: async () => 'D:/chosen/output.png', open: asy
 test('native save uses the chosen path and preserves exact binary bytes', async () => {
   let options, written
   const files = createNativeFiles(host({ save: async next => { options = next; return 'D:/用户选择/输出.png' }, writeFile: async (path, bytes) => { written = { path, bytes } } }))
-  await files.save(new Blob([new Uint8Array([0, 127, 255])]), '步骤/一.png')
+  assert.equal(await files.save(new Blob([new Uint8Array([0, 127, 255])]), '步骤/一.png'), 'D:/用户选择/输出.png')
   assert.equal(options.defaultPath, '步骤_一.png')
   assert.deepEqual(options.filters[0].extensions, ['png'])
   assert.equal(written.path, 'D:/用户选择/输出.png')

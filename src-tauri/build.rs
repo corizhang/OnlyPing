@@ -14,6 +14,17 @@ fn main() {
             "project_storage_open_directory",
             "project_file_version",
             "project_file_write",
+            "workspace_info",
+            "workspace_directory",
+            "workspace_save",
+            "workspace_remember",
+            "workspace_lookup",
+            "workspace_open",
+            "image_export_begin",
+            "image_export_write",
+            "image_export_end",
+            "image_export_file_location",
+            "image_export_open_location",
         ]),
     ))
     .expect("failed to build application permissions")

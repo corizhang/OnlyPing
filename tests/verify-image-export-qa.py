@@ -52,8 +52,49 @@ def decode(data, size):
 
 
 report = json.loads((root / 'report.json').read_text('utf-8'))
-assert len(report['passed']) == 7
+assert len(report['passed']) == 23
+
+def jpeg_size(data):
+    assert data[:3] == b'\xff\xd8\xff' and data[-2:] == b'\xff\xd9'
+    position = 2
+    while position < len(data):
+        assert data[position] == 255
+        marker = data[position + 1]
+        length = int.from_bytes(data[position + 2:position + 4], 'big')
+        assert length >= 2
+        if marker in (0xc0, 0xc1, 0xc2):
+            assert data[position + 4] == 8
+            return (int.from_bytes(data[position + 7:position + 9], 'big'), int.from_bytes(data[position + 5:position + 7], 'big'))
+        position += length + 2
+    raise AssertionError('No JPEG frame')
+
+assert jpeg_size((root / 'single.jpg').read_bytes()) == (160, 90)
+assert jpeg_size((root / 'preview.jpg').read_bytes()) == (120, 70)
+preview_rows, preview_bpp = decode((root / 'preview.png').read_bytes(), (120, 70))
+assert tuple(preview_rows[0][:3]) == (219, 234, 254)
+assert jpeg_size((root / 'white.jpg').read_bytes()) == (320, 180)
+assert (root / 'quality-low.jpg').stat().st_size < (root / 'quality-high.jpg').stat().st_size
+with zipfile.ZipFile(root / 'jpeg.zip') as jpeg_archive:
+    assert jpeg_archive.testzip() is None
+    assert jpeg_archive.namelist() == ['001-重复_名称.jpg', '002-重复_名称.jpg', '003-第三张.jpg']
+    for entry, size in zip(jpeg_archive.namelist(), [(320, 180), (240, 140), (300, 200)], strict=True):
+        assert jpeg_size(jpeg_archive.read(entry)) == size
 single = (root / 'single.png').read_bytes()
+half_rows, half_bpp = decode((root / 'half.png').read_bytes(), (160, 90))
+assert half_rows[30][20 * half_bpp] > 180 and half_rows[30][20 * half_bpp + 1] < 150
+with zipfile.ZipFile(root / 'limited.zip') as limited:
+    assert limited.testzip() is None
+    for entry, size in zip(limited.namelist(), [(160, 90), (160, 93), (160, 107)], strict=True):
+        decode(limited.read(entry), size)
+restart_rows, restart_bpp = decode((root / 'restart.png').read_bytes(), (240, 140))
+original_rows, original_bpp = decode((root / 'row.png').read_bytes(), (240, 140))
+assert restart_bpp == original_bpp
+assert any(a != b for a, b in zip(restart_rows, original_rows))
+# Changing numbering must leave all pixels outside the number marker unchanged.
+for y, (a, b) in enumerate(zip(restart_rows, original_rows)):
+    for x in range(240):
+        if not (160 <= x <= 200 and 50 <= y <= 90):
+            assert a[x * restart_bpp:(x + 1) * restart_bpp] == b[x * restart_bpp:(x + 1) * restart_bpp]
 rows, bpp = decode(single, (320, 180))
 assert tuple(rows[0][:3]) == (241, 245, 249)
 assert rows[60][40 * bpp] > 220 and rows[60][40 * bpp + 1] < 60
@@ -70,4 +111,4 @@ with zipfile.ZipFile(root / 'all.zip') as archive:
         if index == 3:
             assert sum(1 for row in rows for x in range(0, len(row), bpp) if row[x + 2] > 180 and row[x] < 80 and row[x + 1] < 80) > 10
     assert archive.read(names[1]) == (root / 'row.png').read_bytes()
-print('PASS: PNG dimensions/CRC/base/annotation pixels, ZIP order/CRC, current and row outputs identical to ZIP entries')
+print('PASS: PNG pixels/CRC, JPEG frame dimensions and quality sizes, ZIP filenames/order/CRC, single/row PNG consistency')

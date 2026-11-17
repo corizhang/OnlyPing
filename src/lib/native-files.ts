@@ -23,6 +23,7 @@ export function createNativeFiles(host: NativeFilesHost) {
       signal?.throwIfAborted()
       // Only a path explicitly returned by a native user picker is written.
       await host.writeFile(path, data)
+      return path
     },
     async openProject(): Promise<File | null> {
       const path = await host.open({ title: '打开 OnlyPing 项目', multiple: false, filters: [{ name: 'OnlyPing 项目', extensions: ['json'] }] })

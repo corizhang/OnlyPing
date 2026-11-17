@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-image-export-open-location"
+description = "Enables the image_export_open_location command without any pre-configured scope."
+commands.allow = ["image_export_open_location"]
+
+[[permission]]
+identifier = "deny-image-export-open-location"
+description = "Denies the image_export_open_location command without any pre-configured scope."
+commands.deny = ["image_export_open_location"]

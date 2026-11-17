@@ -22,6 +22,8 @@ test('desktop filesystem commands are limited to the local main window with no g
   assert.ok(capability.permissions.includes('allow-write-ai-key'))
   assert.ok(capability.permissions.includes('allow-project-file-version'))
   assert.ok(capability.permissions.includes('allow-project-file-write'))
+  for (const command of ['info', 'directory', 'save', 'remember', 'lookup', 'open']) assert.ok(capability.permissions.includes(`allow-workspace-${command}`))
+  for (const command of ['begin', 'write', 'end', 'file-location', 'open-location']) assert.ok(capability.permissions.includes(`allow-image-export-${command}`))
   for (const command of ['ready', 'migrate', 'save', 'read', 'delete', 'missing-assets', 'list', 'location', 'open-directory']) {
     assert.ok(capability.permissions.includes(`allow-project-storage-${command}`))
   }

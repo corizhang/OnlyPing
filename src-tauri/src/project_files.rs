@@ -7,7 +7,7 @@ use tauri_plugin_fs::FsExt;
 #[derive(Debug, Serialize)]
 pub struct FileError {
     code: &'static str,
-    message: &'static str,
+    pub(crate) message: &'static str,
 }
 type Result<T> = std::result::Result<T, FileError>;
 fn io_error() -> FileError {
@@ -24,7 +24,7 @@ fn conflict() -> FileError {
 }
 fn checked_path(app: &tauri::AppHandle, path: String) -> Result<PathBuf> {
     let path = PathBuf::from(path);
-    if !path.is_absolute() || !app.fs_scope().is_allowed(&path) {
+    if !path.is_absolute() || !(app.fs_scope().is_allowed(&path) || crate::workspace::known_path(app, &path)) {
         return Err(FileError {
             code: "scope",
             message: "请先通过文件对话框选择项目文件，重启后需要重新授权",
@@ -32,7 +32,7 @@ fn checked_path(app: &tauri::AppHandle, path: String) -> Result<PathBuf> {
     }
     Ok(path)
 }
-fn version(path: &Path) -> Result<Option<String>> {
+pub(crate) fn version(path: &Path) -> Result<Option<String>> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(io_error()),
@@ -56,7 +56,7 @@ fn version(path: &Path) -> Result<Option<String>> {
     }
     Ok(Some(format!("{:x}", digest.finalize())))
 }
-fn write_checked(path: &Path, contents: &str, expected: Option<&str>) -> Result<String> {
+pub(crate) fn write_checked(path: &Path, contents: &str, expected: Option<&str>) -> Result<String> {
     let value: serde_json::Value = serde_json::from_str(contents).map_err(|_| FileError {
         code: "invalid",
         message: "项目 JSON 无效，未写入文件",
@@ -107,6 +107,7 @@ pub async fn project_file_write(
     expected_hash: Option<String>,
 ) -> Result<String> {
     let path = checked_path(&app, path)?;
+    if !crate::workspace::path_identity_allowed(&app, &path, &contents) { return Err(conflict()); }
     tauri::async_runtime::spawn_blocking(move || {
         write_checked(&path, &contents, expected_hash.as_deref())
     })

@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 const origin = 'http://127.0.0.1:3011'
-const allowed = new Set(['single.png', 'specified.zip', 'all.zip', 'row.png', 'report.json'])
+const allowed = new Set(['single.png', 'specified.zip', 'all.zip', 'row.png', 'half.png', 'limited.zip', 'restart.png', 'single.jpg', 'jpeg.zip', 'white.jpg', 'quality-low.jpg', 'quality-high.jpg', 'preview.jpg', 'preview.png', 'report.json'])
 export async function createImageExportQAServer(directory) {
   await mkdir(directory, { recursive: true })
   return createServer(async (request, response) => {

@@ -63,6 +63,9 @@ import CanvasEditor from '@/components/CanvasEditor'
 import StepNotesEditor from '@/components/StepNotesEditor'
 import ExportPreview from '@/components/ExportPreview'
 import ImageExportDialog from '@/components/ImageExportDialog'
+import ImageExportResult from '@/components/ImageExportResult'
+import { ImageExportFailure, ImageExportImageFailure, type ImageExportReport } from '@/lib/image-export-result'
+import { saveImageExportPreferences } from '@/lib/image-export-preferences'
 import PageList from '@/components/PageList'
 import { loadAIConfig, restoreAIConfig } from '@/lib/ai-config'
 import { readRecoverableProject } from '@/lib/project-recovery'
@@ -80,9 +83,11 @@ import { createNativeProjectSession, hasActiveFileOperation, isDesktop, saveFile
 import { projectFilename, type ProjectFileSource } from '@/lib/project-files'
 import { useDesktopClose } from '@/hooks/use-desktop-close'
 import { useProjectFileShortcuts } from '@/hooks/use-project-file-shortcuts'
+import ProjectStart from '@/components/ProjectStart'
+import { workspaceInvoke, type WorkspaceInfo, type WorkspaceEntry } from '@/lib/workspace'
 import { filesToPages } from '@/lib/import'
 import { exportAnnotatedImages, exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
-import { imageExportWarnings, planImageExport, type ImageExportSelection } from '@/lib/image-export'
+import { imageExportWarnings, planImageExport, type ImageExportOptions, type ImageExportSelection } from '@/lib/image-export'
 import { clearImageCache, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
 import { computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
@@ -200,6 +205,8 @@ export default function Home() {
   }, [])
   const [previewOpen, setPreviewOpen] = useState(false)
   const [imageExportOpen, setImageExportOpen] = useState(false)
+  const [imageExportResult, setImageExportResult] = useState<ImageExportReport | null>(null)
+  const [imageExportResultOpen, setImageExportResultOpen] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectName, setNewProjectName] = useState('未命名明白纸')
   const [exportStyle, setExportStyleState] = useState<ExportStyle>(DEFAULT_EXPORT_STYLE)
@@ -207,6 +214,11 @@ export default function Home() {
   const [projectId, setProjectId] = useState<string>(() => crypto.randomUUID())
   const projectIdRef = useRef(projectId)
   const [projectFiles] = useState(createNativeProjectSession)
+  const [homeOpen, setHomeOpen] = useState(isDesktop)
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null)
+  const [workspaceLoading, setWorkspaceLoading] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState('')
+  const [workspaceAttempt, setWorkspaceAttempt] = useState(0)
   const [projectFileRevision, setProjectFileRevision] = useState(0)
   const [projectFileBusy, setProjectFileBusy] = useState(false)
   const projectFileTask = useRef(false)
@@ -495,6 +507,24 @@ export default function Home() {
   const fileBinding = projectFiles.binding(projectId)
   const fileDirty = !!fileBinding && (projectFiles.dirty(projectId, saveData) || pendingText || compositionPending)
   useEffect(() => {
+    if (!isDesktop()) return
+    let active = true
+    void projectFiles.restore(projectId).then(() => { if (active) setProjectFileRevision(value => value + 1) }).catch(error => { if (active) setWorkspaceError(error instanceof Error ? error.message : '项目文件关联恢复失败') })
+    return () => { active = false }
+  }, [projectFiles, projectId])
+  useEffect(() => {
+    if (!homeOpen || !isDesktop()) return
+    let active = true
+    void Promise.resolve().then(async () => {
+      if (!active) return
+      setWorkspaceLoading(true)
+      try { const info = await workspaceInvoke<WorkspaceInfo>('workspace_info'); if (active) { setWorkspaceInfo(info); setWorkspaceError('') } }
+      catch (error) { if (active) setWorkspaceError(error instanceof Error ? error.message : '最近项目读取失败') }
+      finally { if (active) setWorkspaceLoading(false) }
+    })
+    return () => { active = false }
+  }, [homeOpen, workspaceAttempt])
+  useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       if (projectFiles.binding(projectId) && (projectFiles.dirty(projectId, saveData) || pendingText || compositionPending)) { event.preventDefault(); event.returnValue = '' }
     }
@@ -547,6 +577,7 @@ export default function Home() {
       const data = await readLocalProject(entry)
       if (!data) throw new Error('存档损坏或图片资源缺失')
       applyProject(data)
+      setHomeOpen(false)
       setLibraryOpen(false)
       toast.success(entry.revision === undefined ? '已打开本地项目' : '已恢复历史版本')
     } catch (err) { toast.error(err instanceof Error ? err.message : '恢复失败') }
@@ -730,8 +761,11 @@ export default function Home() {
     })
   }
 
-  const doImageExport = async (selection: ImageExportSelection) => {
+  const doImageExport = async (selection: ImageExportSelection, options?: ImageExportOptions) => {
     setPreviewOpen(false)
+    setImageExportResultOpen(false)
+    let batch: { index: number; name: string }[] = []
+    let finished: ImageExportReport | undefined
     try {
       await exportTask.run(async task => {
         const sourceId = projectIdRef.current
@@ -739,18 +773,24 @@ export default function Home() {
         if (!await inputSessions.settle(blurInput)) { inputBlocked(); return }
         checkTask(task)
         if (sourceId !== projectIdRef.current) throw new DOMException('项目已切换', 'AbortError')
-        const jobs = planImageExport(pagesRef.current, selection)
+        const jobs = planImageExport(pagesRef.current, selection, options)
         const warnings = imageExportWarnings(jobs)
         if (warnings.length && !window.confirm(`${warnings.slice(0, 3).join('\n')}${warnings.length > 3 ? `\n另有 ${warnings.length - 3} 张图片存在相同问题` : ''}\n\n建议先显示保护标注。仍按当前画布导出吗？`)) return
+        batch = jobs.map(job => ({ index: job.index, name: job.page.name }))
+        if (options && !saveImageExportPreferences(options)) toast.warning('无法记住本次导出设置，仍会按当前设置导出')
         checkTask(task)
         const exportTitle = metadataRef.current.title
         setImageExportOpen(false)
-        await exportAnnotatedImages(exportTitle, jobs, task)
+        const output = await exportAnnotatedImages(exportTitle, jobs, task, options?.destination)
+        finished = output.report
         checkTask(task)
-        toast.success(`已导出 ${jobs.length} 张标注图片${jobs.length > 1 ? '（ZIP）' : '（PNG）'}`)
       })
+      if (finished) { setImageExportResult(finished); setImageExportResultOpen(true) }
     } catch (error) {
-      if (isTaskCancelled(error)) toast.info('已取消图片导出')
+      const cancelled = isTaskCancelled(error)
+      const report = error instanceof ImageExportFailure ? error.report : finished ? { ...finished, status: cancelled ? 'cancelled' as const : 'failed' as const, message: error instanceof Error ? error.message : '导出收尾失败' } : batch.length ? { status: cancelled ? 'cancelled' as const : 'failed' as const, total: batch.length, completed: 0, pending: batch, delivery: options?.destination === 'folder' ? 'folder' as const : isDesktop() ? 'native-file' as const : 'download' as const, message: error instanceof Error ? error.message : '请重试或分批导出' } : null
+      if (report) { setImageExportResult(error instanceof ImageExportImageFailure ? { ...report, failedImage: error.image } : report); setImageExportResultOpen(true) }
+      if (isTaskCancelled(error)) toast.info('已取消图片导出', { description: error instanceof Error ? error.message : undefined })
       else toast.error('标注图片导出失败', { description: error instanceof Error ? error.message : '请重试或分批导出' })
     }
   }
@@ -859,6 +899,7 @@ export default function Home() {
     setIssues([])
     setSaveNote('正在保存新项目…')
     setNewProjectOpen(false)
+    setHomeOpen(false)
   }
 
   const applyProject = (data: ProjectData) => {
@@ -893,9 +934,11 @@ export default function Home() {
         }
         if (sourceId !== projectIdRef.current) return
         if (!await persistCurrent()) return
-        const opened = { ...validated, exportStyle: restoreExportStyle(validated.exportStyle), schemaVersion: 1 as const, projectId: crypto.randomUUID() }
+        const opened = { ...validated, exportStyle: restoreExportStyle(validated.exportStyle), schemaVersion: 1 as const, projectId: source ? validated.projectId ?? crypto.randomUUID() : crypto.randomUUID() }
+        if (source && validated.projectId) await projectFiles.remember(opened, source)
         applyProject(opened)
         if (source) { projectFiles.bind(opened.projectId, source, opened); setProjectFileRevision(n => n + 1) }
+        setHomeOpen(false)
         toast.success(source ? '已打开项目文件；本机存档与文件保存分别管理' : '已导入为独立本地项目')
       } catch {
         toast.error('项目文件解析失败，原工作区保留')
@@ -907,6 +950,27 @@ export default function Home() {
     await runProjectFileOperation(async () => { const source = await projectFiles.open(); if (source) await loadProject(source.file, source) })
   }
   useProjectFileShortcuts(saveProjectFile, chooseProject)
+  const changeProjectDirectory = async () => {
+    await runProjectFileOperation(async () => {
+      const path = await (await import('@tauri-apps/plugin-dialog')).open({ title: '设置新项目默认保存目录', directory: true, multiple: false, recursive: false })
+      if (path === null) return
+      if (typeof path !== 'string') throw new Error('请选择一个文件夹')
+      await workspaceInvoke('workspace_directory', { path })
+      setWorkspaceAttempt(value => value + 1)
+      toast.success('默认项目目录已更新；已有项目保持原保存位置')
+    })
+  }
+  const openRecentProject = async (entry: WorkspaceEntry) => {
+    if (!entry.available) { toast.info('文件已移动或删除，请重新定位；也可打开本机恢复存档'); await chooseProject(); return }
+    await runProjectFileOperation(async () => {
+      const recovery = (await listLocalProjects()).find(item => item.key === `project:${entry.id}` && item.revision === undefined)
+      if (recovery && recovery.savedAt > entry.savedAt && !window.confirm('本机可能有较新的恢复存档。打开磁盘文件会保留本机历史；如需继续未保存修改，请取消并选择“本机恢复存档与历史”。仍打开磁盘文件？')) return
+      const opened = await workspaceInvoke<{ entry: WorkspaceEntry; contents: string; changed: boolean }>('workspace_open', { id: entry.id })
+      if (opened.changed && !window.confirm('文件已在外部修改。是否打开当前磁盘版本？本机恢复存档仍可从历史中查看。')) return
+      const source = { path: opened.entry.path, hash: opened.entry.hash, file: new File([opened.contents], projectFilename(opened.entry.path), { type: 'application/json' }) }
+      await loadProject(source.file, source)
+    })
+  }
 
   const [toolOrder, setToolOrder] = useState<Tool[]>(() => {
     const saved = loadJSON<Tool[]>('mbz-tool-order', (v): v is Tool[] => Array.isArray(v) && v.every(x => typeof x === 'string'))
@@ -950,7 +1014,10 @@ export default function Home() {
       onBlurCapture={() => history.current.end()}
     >
       <Toaster richColors position="bottom-right" />
-      {imageExportOpen && <ImageExportDialog pages={pages} currentId={selectedPageId} busy={exporting} onClose={() => { if (exporting) exportTask.cancel(); setImageExportOpen(false) }} onExport={selection => void doImageExport(selection)} />}
+      {homeOpen && <ProjectStart info={workspaceInfo} loading={workspaceLoading} error={workspaceError} busy={projectFileBusy || exporting || storageLoading} onNew={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }} onOpen={() => void chooseProject()} onDirectory={() => void changeProjectDirectory()} onRecent={entry => void openRecentProject(entry)} onRecovery={() => void openLocalProjects()} onContinue={() => setHomeOpen(false)} onRetry={() => setWorkspaceAttempt(value => value + 1)} />}
+      <div className="contents" inert={homeOpen}>
+      {imageExportOpen && <ImageExportDialog pages={pages} currentId={selectedPageId} busy={exporting} onClose={() => { if (exporting) exportTask.cancel(); setImageExportOpen(false) }} onExport={(selection, options) => void doImageExport(selection, options)} />}
+      {imageExportResultOpen && imageExportResult && <ImageExportResult key={`${imageExportResult.status}:${imageExportResult.locationId ?? imageExportResult.filename ?? ''}`} report={imageExportResult} onClose={() => setImageExportResultOpen(false)} />}
       {/* 顶栏 */}
       <header className="z-20 flex h-12 shrink-0 items-center justify-between border-b border-white/10 bg-[#292929] px-3">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -998,7 +1065,7 @@ export default function Home() {
               <button type="button" onClick={() => setRecoveryOpen(true)} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
             </span>
           )}
-          {isDesktop() && <span className="max-w-48 truncate text-[11px] text-muted-foreground" title={fileBinding ? `${fileBinding.path}；${fileDirty ? '关联文件待保存' : '已与文件同步'}。文件关联仅限当前会话。` : '本机自动存档与 JSON 文件分别保存；Ctrl+S 可选择项目 JSON 文件'}>{fileBinding ? `${fileDirty ? '● ' : ''}${projectFilename(fileBinding.path)}` : '未关联项目文件'}</span>}
+          {isDesktop() && <><Button size="sm" variant="ghost" disabled={projectFileBusy || exporting} onClick={async () => { if (await persistCurrent()) setHomeOpen(true) }}>项目首页</Button><span className="max-w-48 truncate text-[11px] text-muted-foreground" title={fileBinding ? `${fileBinding.path}；${fileDirty ? '项目文件待保存' : '已与文件同步'}。文件关联会在本机保留。` : '本机自动存档独立保留；Ctrl+S 直接保存到默认项目目录'}>{fileBinding ? `${fileDirty ? '● ' : ''}${projectFilename(fileBinding.path)}` : '尚未保存项目文件'}</span></>}
           <DropdownMenu onOpenChange={open => { if (open) void listLocalProjects().then(setLocalProjects).catch(() => setLocalProjects([])) }}>
             <DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -1165,6 +1232,7 @@ export default function Home() {
                 当前页标注图（PNG）
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setImageExportOpen(true)}><ImageIcon className="mr-2 h-4 w-4" />导出标注图片…（指定 / 全部）</DropdownMenuItem>
+              <DropdownMenuItem disabled={!imageExportResult} onClick={() => setImageExportResultOpen(true)}>最近图片导出结果</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -1685,6 +1753,7 @@ export default function Home() {
         if (storageError || !storageReady) setStorageAttempt(n => n + 1)
         else autosave.retry()
       }} onBackup={saveProject} />
+      </div>
     </div>
   )
 }

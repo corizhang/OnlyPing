@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workspace-directory"
+description = "Enables the workspace_directory command without any pre-configured scope."
+commands.allow = ["workspace_directory"]
+
+[[permission]]
+identifier = "deny-workspace-directory"
+description = "Denies the workspace_directory command without any pre-configured scope."
+commands.deny = ["workspace_directory"]

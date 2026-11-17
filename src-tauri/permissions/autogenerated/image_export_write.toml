@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-image-export-write"
+description = "Enables the image_export_write command without any pre-configured scope."
+commands.allow = ["image_export_write"]
+
+[[permission]]
+identifier = "deny-image-export-write"
+description = "Denies the image_export_write command without any pre-configured scope."
+commands.deny = ["image_export_write"]

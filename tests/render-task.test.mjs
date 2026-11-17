@@ -47,3 +47,8 @@ test('canvas release clears its backing buffer', () => {
   releaseCanvas(canvas)
   assert.deepEqual(canvas, { width: 0, height: 0 })
 })
+test('requested encoding quality is forwarded and silent PNG fallback is rejected', async () => {
+  const blob = new Blob(['jpeg'], { type: 'image/jpeg' })
+  assert.equal(await canvasBlob({ toBlob: (callback, type, quality) => { assert.equal(type, 'image/jpeg'); assert.equal(quality, .85); callback(blob) } }, {}, 'image/jpeg', .85), blob)
+  await assert.rejects(canvasBlob({ toBlob: callback => callback(new Blob(['png'], { type: 'image/png' })) }, {}, 'image/jpeg', .9), /不支持所选图片编码/)
+})
