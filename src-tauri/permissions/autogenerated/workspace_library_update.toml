@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workspace-library-update"
+description = "Enables the workspace_library_update command without any pre-configured scope."
+commands.allow = ["workspace_library_update"]
+
+[[permission]]
+identifier = "deny-workspace-library-update"
+description = "Denies the workspace_library_update command without any pre-configured scope."
+commands.deny = ["workspace_library_update"]

@@ -1,6 +1,8 @@
 import type { ProjectData } from './db.ts'
 export interface WorkspaceEntry { id: string; path: string; hash: string; title: string; pages: number; savedAt: number; accessedAt: number; thumbnail: string | null; available: boolean }
-export interface WorkspaceInfo { directory: string; projects: WorkspaceEntry[] }
+export interface LibraryPreferences { pinned: string[]; hidden: string[] }
+export type LibraryAction = 'pin' | 'unpin' | 'hide' | 'show' | 'restore-all'
+export interface WorkspaceInfo { directory: string; projects: WorkspaceEntry[]; preferences?: LibraryPreferences }
 export async function workspaceInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   try { return await (await import('@tauri-apps/api/core')).invoke<T>(command, args) }
   catch (error) { throw new Error(typeof error === 'string' ? error : (error as { message?: string })?.message ?? '项目目录操作失败，请保留工作区并重试') }

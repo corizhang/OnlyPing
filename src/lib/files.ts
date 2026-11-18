@@ -47,6 +47,14 @@ export function createNativeProjectSession() {
     managedSave: async (data, contents) => workspaceInvoke<WorkspaceEntry>('workspace_save', { contents, thumbnail: await projectThumbnail(data) }),
     remember: async (data, path, hash) => { await workspaceInvoke('workspace_remember', { path, hash, thumbnail: await projectThumbnail(data) }) },
     lookup: id => workspaceInvoke<WorkspaceEntry | null>('workspace_lookup', { id }),
+    relocate: async (id, source, previous, data) => { await workspaceInvoke('workspace_relocate', { id, path: source.path, hash: source.hash, previousPath: previous.path, previousHash: previous.hash, thumbnail: await projectThumbnail(data) }) },
+    snapshot: async id => {
+      const snapshot = await workspaceInvoke<{ entry: WorkspaceEntry; contents: string }>('workspace_snapshot', { id })
+      const { validateAutosave } = await import('./db.ts')
+      const data = validateAutosave(JSON.parse(snapshot.contents.replace(/^\uFEFF/, '')))
+      if (!data || data.projectId !== id) throw new Error('项目文件内容无效，未确认保存状态')
+      return { path: snapshot.entry.path, hash: snapshot.entry.hash, data }
+    },
   })
 }
 /** Include settings writes in the desktop close guard. */

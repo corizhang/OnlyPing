@@ -85,6 +85,11 @@ import { useDesktopClose } from '@/hooks/use-desktop-close'
 import { useProjectFileShortcuts } from '@/hooks/use-project-file-shortcuts'
 import ProjectStart from '@/components/ProjectStart'
 import { workspaceInvoke, type WorkspaceInfo, type WorkspaceEntry } from '@/lib/workspace'
+import { recoveryLookupIds } from '@/lib/project-start-items'
+import { inspectProjectRelocation } from '@/lib/project-relocation'
+import type { LibraryAction, LibraryPreferences } from '@/lib/workspace'
+import { clearProjectContentCache, projectContentHash } from '@/lib/project-content'
+import ProjectVersionChoice, { type ProjectVersions } from '@/components/ProjectVersionChoice'
 import { filesToPages } from '@/lib/import'
 import { exportAnnotatedImages, exportDocx, exportLongImage, exportPdf } from '@/lib/exporters'
 import { imageExportWarnings, planImageExport, type ImageExportOptions, type ImageExportSelection } from '@/lib/image-export'
@@ -219,6 +224,8 @@ export default function Home() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [workspaceAttempt, setWorkspaceAttempt] = useState(0)
+  const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [projectVersions, setProjectVersions] = useState<ProjectVersions | null>(null)
   const [projectFileRevision, setProjectFileRevision] = useState(0)
   const [projectFileBusy, setProjectFileBusy] = useState(false)
   const projectFileTask = useRef(false)
@@ -505,7 +512,8 @@ export default function Home() {
   useEffect(() => { if (storageReady) setRecoveryProject(saveData) }, [storageReady, saveData])
   const autosave = useProjectAutosave(saveData, storageReady, pendingText || compositionPending)
   const fileBinding = projectFiles.binding(projectId)
-  const fileDirty = !!fileBinding && (projectFiles.dirty(projectId, saveData) || pendingText || compositionPending)
+  const fileStatus = fileBinding && (pendingText || compositionPending) ? 'dirty' : projectFiles.status(projectId, saveData)
+  const fileStatusText = { saved: '已与文件同步', dirty: '项目文件待保存', checking: '正在核对文件内容', external: '文件已在外部修改', unavailable: '文件无法读取，恢复存档仍保留', unbound: '尚未保存项目文件' }[fileStatus]
   useEffect(() => {
     if (!isDesktop()) return
     let active = true
@@ -513,17 +521,34 @@ export default function Home() {
     return () => { active = false }
   }, [projectFiles, projectId])
   useEffect(() => {
+    if (!storageReady || pendingText || compositionPending || !fileBinding) return
+    let active = true
+    const timer = setTimeout(() => { void projectFiles.check(projectId, saveData).then(() => { if (active) setProjectFileRevision(value => value + 1) }).catch(() => { if (active) setWorkspaceError('保存状态核对失败，当前恢复存档未被覆盖') }) }, 500)
+    return () => { active = false; clearTimeout(timer) }
+  }, [projectFiles, projectId, saveData, storageReady, pendingText, compositionPending, fileBinding, fileStatus])
+  useEffect(() => {
+    if (!isDesktop()) return
+    const focus = () => { void projectFiles.refreshDisk(projectId).then(() => setProjectFileRevision(value => value + 1)).catch(() => {}) }
+    window.addEventListener('focus', focus)
+    return () => window.removeEventListener('focus', focus)
+  }, [projectFiles, projectId])
+  useEffect(() => {
     if (!homeOpen || !isDesktop()) return
     let active = true
-    void Promise.resolve().then(async () => {
+    const timer = window.setTimeout(() => { void (async () => {
       if (!active) return
       setWorkspaceLoading(true)
-      try { const info = await workspaceInvoke<WorkspaceInfo>('workspace_info'); if (active) { setWorkspaceInfo(info); setWorkspaceError('') } }
+      try {
+        const recoveries = await listLocalProjects()
+        if (active) setLocalProjects(recoveries)
+        const info = await workspaceInvoke<WorkspaceInfo>('workspace_info', { recoveryIds: recoveryLookupIds(recoveries, workspaceSearch), search: workspaceSearch })
+        if (active) { setWorkspaceInfo(info); setWorkspaceError('') }
+      }
       catch (error) { if (active) setWorkspaceError(error instanceof Error ? error.message : '最近项目读取失败') }
       finally { if (active) setWorkspaceLoading(false) }
-    })
-    return () => { active = false }
-  }, [homeOpen, workspaceAttempt])
+    })() }, 200)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [homeOpen, workspaceAttempt, workspaceSearch])
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       if (projectFiles.binding(projectId) && (projectFiles.dirty(projectId, saveData) || pendingText || compositionPending)) { event.preventDefault(); event.returnValue = '' }
@@ -565,9 +590,11 @@ export default function Home() {
     if (exporting || hasActiveFileOperation()) { toast.info('请先完成文件操作或配置保存，再关闭窗口'); return false }
     const persisted = storageReady && await persistCurrent()
     const current = { schemaVersion: 1 as const, projectId: projectIdRef.current, ...snapshot() }
+    if (persisted) { await projectFiles.refreshDisk(current.projectId); await projectFiles.check(current.projectId, current) }
     if (persisted && !projectFiles.dirty(current.projectId, current)) return true
+    const uncertainFile = ['external', 'unavailable'].includes(projectFiles.status(current.projectId, current))
     const { confirm } = await import('@tauri-apps/plugin-dialog')
-    return confirm(persisted ? '当前修改已自动保存到本机，但关联的 JSON 文件尚未更新。可返回按 Ctrl+S 保存文件，或关闭后从本地项目恢复。仍然关闭？' : '本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
+    return confirm(persisted ? uncertainFile ? '项目文件已在外部修改或无法读取，当前工作区已保存在本机恢复存档。可返回核对版本或另存为副本。仍然关闭？' : '当前修改已自动保存到本机，但关联的 JSON 文件尚未更新。可返回按 Ctrl+S 保存文件，或关闭后从本地项目恢复。仍然关闭？' : '本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
       title: 'OnlyPing · 未保存内容', kind: 'warning', okLabel: '仍然关闭', cancelLabel: '留在编辑器',
     })
   }, () => toast.error('关闭前保存失败，请先备份项目后重试'))
@@ -864,6 +891,12 @@ export default function Home() {
     finally { projectFileTask.current = false; setProjectFileBusy(false) }
   }
 
+  const updateProjectLibrary = async (action: LibraryAction, id?: string) => {
+    const preferences = await withNativeOperation(() => workspaceInvoke<LibraryPreferences>('workspace_library_update', { id: id ?? null, action }))
+    setWorkspaceInfo(info => info ? { ...info, preferences } : info)
+    setWorkspaceAttempt(value => value + 1)
+  }
+
   const saveProjectFile = async (saveAs = false) => {
     if (!isDesktop()) { await saveProject(); return }
     await runProjectFileOperation(async () => {
@@ -883,6 +916,7 @@ export default function Home() {
     projectIdRef.current = crypto.randomUUID()
     setProjectId(projectIdRef.current)
     clearImageCache()
+    clearProjectContentCache()
     const name = newProjectName.trim() || '未命名明白纸'
     history.current.clear()
     pagesRef.current = []
@@ -904,6 +938,7 @@ export default function Home() {
 
   const applyProject = (data: ProjectData) => {
     clearImageCache()
+    clearProjectContentCache()
     inputSessions.invalidate()
     projectIdRef.current = data.projectId ?? crypto.randomUUID()
     setProjectId(projectIdRef.current)
@@ -923,7 +958,7 @@ export default function Home() {
     setCheckSig(null)
   }
 
-  const loadProject = async (file: File, source?: ProjectFileSource) => {
+  const loadProject = async (file: File, source?: ProjectFileSource, alreadyRegistered = false) => {
     const sourceId = projectIdRef.current
       try {
         const data = JSON.parse((await file.text()).replace(/^\uFEFF/, ''))
@@ -935,13 +970,15 @@ export default function Home() {
         if (sourceId !== projectIdRef.current) return
         if (!await persistCurrent()) return
         const opened = { ...validated, exportStyle: restoreExportStyle(validated.exportStyle), schemaVersion: 1 as const, projectId: source ? validated.projectId ?? crypto.randomUUID() : crypto.randomUUID() }
-        if (source && validated.projectId) await projectFiles.remember(opened, source)
+        if (source && validated.projectId && !alreadyRegistered) await projectFiles.remember(opened, source)
         applyProject(opened)
         if (source) { projectFiles.bind(opened.projectId, source, opened); setProjectFileRevision(n => n + 1) }
         setHomeOpen(false)
         toast.success(source ? '已打开项目文件；本机存档与文件保存分别管理' : '已导入为独立本地项目')
-      } catch {
-        toast.error('项目文件解析失败，原工作区保留')
+        return true
+      } catch (error) {
+        toast.error('项目文件打开失败，原工作区保留', { description: error instanceof Error ? error.message : '请检查文件并重试' })
+        return false
       }
   }
 
@@ -961,14 +998,83 @@ export default function Home() {
     })
   }
   const openRecentProject = async (entry: WorkspaceEntry) => {
-    if (!entry.available) { toast.info('文件已移动或删除，请重新定位；也可打开本机恢复存档'); await chooseProject(); return }
     await runProjectFileOperation(async () => {
-      const recovery = (await listLocalProjects()).find(item => item.key === `project:${entry.id}` && item.revision === undefined)
-      if (recovery && recovery.savedAt > entry.savedAt && !window.confirm('本机可能有较新的恢复存档。打开磁盘文件会保留本机历史；如需继续未保存修改，请取消并选择“本机恢复存档与历史”。仍打开磁盘文件？')) return
-      const opened = await workspaceInvoke<{ entry: WorkspaceEntry; contents: string; changed: boolean }>('workspace_open', { id: entry.id })
-      if (opened.changed && !window.confirm('文件已在外部修改。是否打开当前磁盘版本？本机恢复存档仍可从历史中查看。')) return
-      const source = { path: opened.entry.path, hash: opened.entry.hash, file: new File([opened.contents], projectFilename(opened.entry.path), { type: 'application/json' }) }
-      await loadProject(source.file, source)
+      if (!await persistCurrent()) return
+      const recoveryEntry = (await listLocalProjects()).find(item => item.key === `project:${entry.id}` && item.revision === undefined)
+      const recovery = recoveryEntry ? await readLocalProject(recoveryEntry) : null
+      let source: ProjectFileSource | null = null, file: ProjectData | null = null, changed = false, message = ''
+      try {
+        const opened = await workspaceInvoke<{ entry: WorkspaceEntry; contents: string; changed: boolean }>('workspace_snapshot', { id: entry.id })
+        file = validateAutosave(JSON.parse(opened.contents.replace(/^\uFEFF/, '')))
+        if (!file || file.projectId !== entry.id) throw new Error('项目文件格式无效或标识不匹配')
+        source = { path: opened.entry.path, hash: opened.entry.hash, file: new File([opened.contents], projectFilename(opened.entry.path), { type: 'application/json' }) }
+        changed = opened.changed
+      } catch (error) { message = error instanceof Error ? error.message : '项目文件暂时无法读取' }
+      const differs = file && recovery ? await projectContentHash(file) !== await projectContentHash(recovery) : false
+      if (!file || changed || differs) {
+        setProjectVersions({ entry, source, file, recovery, message: message || (changed ? '磁盘文件已在外部修改，请核对要继续编辑的版本。' : '项目文件与本机恢复存档内容不同，请选择要继续编辑的版本。') })
+        return
+      }
+      await loadProject(source!.file, source!)
+    })
+  }
+  const locateProjectFile = async () => {
+    const versions = projectVersions
+    if (!versions) return
+    await runProjectFileOperation(async () => {
+      try {
+        const source = await projectFiles.open()
+        if (!source) return
+        const file = await inspectProjectRelocation(source, versions.entry.id, validateAutosave)
+        setProjectVersions({ ...versions, location: versions.location ?? { path: versions.entry.path, hash: versions.entry.hash }, source, file, entry: { ...versions.entry, path: source.path, hash: source.hash, title: file.title, pages: file.pages.length, available: true }, message: '已找到同一项目的新位置。请核对文件与本机恢复存档，选择要继续编辑的版本。', error: undefined })
+      } catch (error) { setProjectVersions({ ...versions, error: error instanceof Error ? error.message : '重新定位失败，原关联保留' }) }
+    })
+  }
+  const chooseProjectVersion = async (choice: 'file' | 'recovery' | 'copy') => {
+    const versions = projectVersions
+    if (!versions) return
+    await runProjectFileOperation(async () => {
+      let confirmed = versions
+      const confirmLocation = async () => {
+        if (!versions.location || !versions.source || !versions.file) return
+        await projectFiles.relocate(versions.entry.id, versions.source, versions.file, versions.location)
+        confirmed = { ...versions, location: undefined, error: undefined, message: '文件关联已更新到新位置。请选择要继续编辑的版本。' }
+        setProjectVersions(confirmed)
+        setProjectFileRevision(value => value + 1)
+        setWorkspaceAttempt(value => value + 1)
+      }
+      try {
+      if (choice === 'file' && versions.source) {
+        if (versions.location && versions.file) {
+          if (!await persistCurrent()) return
+          await confirmLocation()
+        } else {
+          const latest = await workspaceInvoke<{ entry: WorkspaceEntry }>('workspace_open', { id: versions.entry.id })
+          if (latest.entry.hash !== versions.source.hash) throw new Error('磁盘文件再次变化，请取消后重新打开并核对版本')
+        }
+        if (!await loadProject(versions.source.file, versions.source, !!versions.location)) return
+      } else if (versions.recovery) {
+        if (!await persistCurrent()) return
+        if (choice === 'copy') {
+          const copy = { ...versions.recovery, projectId: crypto.randomUUID(), title: `${versions.recovery.title}（恢复副本）`, savedAt: undefined }
+          const path = await projectFiles.save(copy)
+          try { await idbSet({ ...copy, savedAt: Date.now() }) }
+          catch { setWorkspaceAttempt(value => value + 1); throw new Error(`恢复副本已保存到 ${path}，但本机存档更新失败。请保留当前工作区，可从最近项目重新打开副本。`) }
+          applyProject(copy)
+          setProjectFileRevision(value => value + 1)
+        } else {
+          if (versions.location && versions.source && versions.file) {
+            await confirmLocation()
+          }
+          await projectFiles.restore(versions.entry.id)
+          await projectFiles.refreshDisk(versions.entry.id)
+          applyProject(versions.recovery)
+          setProjectFileRevision(value => value + 1)
+        }
+        setHomeOpen(false)
+      } else return
+      setProjectVersions(null)
+      } catch (error) { setProjectVersions({ ...confirmed, error: error instanceof Error ? error.message : '版本打开失败，请保留当前工作区并重试' }) }
     })
   }
 
@@ -1014,7 +1120,8 @@ export default function Home() {
       onBlurCapture={() => history.current.end()}
     >
       <Toaster richColors position="bottom-right" />
-      {homeOpen && <ProjectStart info={workspaceInfo} loading={workspaceLoading} error={workspaceError} busy={projectFileBusy || exporting || storageLoading} onNew={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }} onOpen={() => void chooseProject()} onDirectory={() => void changeProjectDirectory()} onRecent={entry => void openRecentProject(entry)} onRecovery={() => void openLocalProjects()} onContinue={() => setHomeOpen(false)} onRetry={() => setWorkspaceAttempt(value => value + 1)} />}
+      {homeOpen && <ProjectStart info={workspaceInfo} recoveries={localProjects} search={workspaceSearch} onSearchChange={setWorkspaceSearch} onLibraryChange={updateProjectLibrary} onDraft={entry => void restoreLocal(entry)} loading={workspaceLoading} error={workspaceError} busy={projectFileBusy || exporting || storageLoading} onNew={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }} onOpen={() => void chooseProject()} onDirectory={() => void changeProjectDirectory()} onRecent={entry => void openRecentProject(entry)} onRecovery={() => void openLocalProjects()} onContinue={() => setHomeOpen(false)} onRetry={() => setWorkspaceAttempt(value => value + 1)} />}
+      {projectVersions && <ProjectVersionChoice versions={projectVersions} busy={projectFileBusy} onChoose={choice => void chooseProjectVersion(choice)} onClose={() => setProjectVersions(null)} onLocate={() => void locateProjectFile()} />}
       <div className="contents" inert={homeOpen}>
       {imageExportOpen && <ImageExportDialog pages={pages} currentId={selectedPageId} busy={exporting} onClose={() => { if (exporting) exportTask.cancel(); setImageExportOpen(false) }} onExport={(selection, options) => void doImageExport(selection, options)} />}
       {imageExportResultOpen && imageExportResult && <ImageExportResult key={`${imageExportResult.status}:${imageExportResult.locationId ?? imageExportResult.filename ?? ''}`} report={imageExportResult} onClose={() => setImageExportResultOpen(false)} />}
@@ -1065,7 +1172,7 @@ export default function Home() {
               <button type="button" onClick={() => setRecoveryOpen(true)} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
             </span>
           )}
-          {isDesktop() && <><Button size="sm" variant="ghost" disabled={projectFileBusy || exporting} onClick={async () => { if (await persistCurrent()) setHomeOpen(true) }}>项目首页</Button><span className="max-w-48 truncate text-[11px] text-muted-foreground" title={fileBinding ? `${fileBinding.path}；${fileDirty ? '项目文件待保存' : '已与文件同步'}。文件关联会在本机保留。` : '本机自动存档独立保留；Ctrl+S 直接保存到默认项目目录'}>{fileBinding ? `${fileDirty ? '● ' : ''}${projectFilename(fileBinding.path)}` : '尚未保存项目文件'}</span></>}
+          {isDesktop() && <><Button size="sm" variant="ghost" disabled={projectFileBusy || exporting} onClick={async () => { if (await persistCurrent()) setHomeOpen(true) }}>项目首页</Button><span className="max-w-64 truncate text-[11px] text-muted-foreground" title={fileBinding ? `${fileBinding.path}；${fileStatusText}。文件关联会在本机保留。` : '本机自动存档独立保留；Ctrl+S 直接保存到默认项目目录'}>{fileBinding ? `${fileStatus === 'dirty' ? '● ' : ''}${projectFilename(fileBinding.path)} · ${fileStatusText}` : '尚未保存项目文件'}</span></>}
           <DropdownMenu onOpenChange={open => { if (open) void listLocalProjects().then(setLocalProjects).catch(() => setLocalProjects([])) }}>
             <DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">

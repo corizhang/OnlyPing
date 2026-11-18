@@ -22,6 +22,9 @@ pub fn run() {
             workspace::workspace_remember,
             workspace::workspace_lookup,
             workspace::workspace_open,
+            workspace::workspace_snapshot,
+            workspace::workspace_library_update,
+            workspace::workspace_relocate,
             image_export::image_export_begin,
             image_export::image_export_write,
             image_export::image_export_end,
@@ -44,7 +47,7 @@ pub fn run() {
         .expect("error while building tauri application");
 }
 mod credentials;
+mod image_export;
 mod project_files;
 mod project_storage;
-mod image_export;
 mod workspace;

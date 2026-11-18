@@ -1,5 +1,5 @@
 use crate::project_files::write_checked;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -22,6 +22,12 @@ pub struct Entry {
 pub struct Info {
     directory: String,
     projects: Vec<Entry>,
+    preferences: LibraryPreferences,
+}
+#[derive(Default, Serialize)]
+pub struct LibraryPreferences {
+    pinned: Vec<String>,
+    hidden: Vec<String>,
 }
 #[derive(Serialize)]
 pub struct Opened {
@@ -37,6 +43,7 @@ fn connect(path: &Path) -> Result<Connection> {
     db.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(err)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE COLLATE NOCASE,hash TEXT NOT NULL,title TEXT NOT NULL,pages INTEGER NOT NULL,saved_at INTEGER NOT NULL,accessed_at INTEGER NOT NULL,thumbnail TEXT);").map_err(err)?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS library_preferences(id TEXT PRIMARY KEY,pinned INTEGER NOT NULL DEFAULT 0,hidden INTEGER NOT NULL DEFAULT 0);").map_err(err)?;
     Ok(db)
 }
 fn db(app: &tauri::AppHandle) -> Result<Connection> {
@@ -67,6 +74,143 @@ fn lookup(db: &Connection, id: &str) -> Result<Option<Entry>> {
     )
     .optional()
     .map_err(err)
+}
+fn preferences(db: &Connection) -> Result<LibraryPreferences> {
+    let mut result = LibraryPreferences::default();
+    let mut statement = db
+        .prepare("SELECT id,pinned,hidden FROM library_preferences ORDER BY id")
+        .map_err(err)?;
+    for item in statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        })
+        .map_err(err)?
+    {
+        let (id, pinned, hidden) = item.map_err(err)?;
+        if pinned && !hidden {
+            result.pinned.push(id.clone());
+        }
+        if hidden {
+            result.hidden.push(id);
+        }
+    }
+    Ok(result)
+}
+fn update_library(
+    db: &mut Connection,
+    id: Option<&str>,
+    action: &str,
+) -> Result<LibraryPreferences> {
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(err)?;
+    if action == "restore-all" {
+        tx.execute("UPDATE library_preferences SET hidden=0", [])
+            .map_err(err)?;
+    } else {
+        let id = id
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 80
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            })
+            .ok_or("项目标识无效，未修改最近记录")?;
+        let current = preferences(&tx)?;
+        if action == "pin"
+            && current.pinned.len() >= 12
+            && !current.pinned.iter().any(|value| value == id)
+        {
+            return Err("最多固定 12 个项目，请先取消其他项目的固定".into());
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO library_preferences(id) VALUES(?)",
+            [id],
+        )
+        .map_err(err)?;
+        match action {
+            "pin" => {
+                tx.execute(
+                    "UPDATE library_preferences SET pinned=1,hidden=0 WHERE id=?",
+                    [id],
+                )
+                .map_err(err)?;
+            }
+            "unpin" => {
+                tx.execute("UPDATE library_preferences SET pinned=0 WHERE id=?", [id])
+                    .map_err(err)?;
+            }
+            "hide" => {
+                tx.execute(
+                    "UPDATE library_preferences SET hidden=1,pinned=0 WHERE id=?",
+                    [id],
+                )
+                .map_err(err)?;
+            }
+            "show" => {
+                tx.execute("UPDATE library_preferences SET hidden=0 WHERE id=?", [id])
+                    .map_err(err)?;
+            }
+            _ => return Err("不支持的最近项目操作".into()),
+        }
+    }
+    let result = preferences(&tx)?;
+    tx.commit().map_err(err)?;
+    Ok(result)
+}
+fn recent_projects(db: &Connection, query: &str, prefs: &LibraryPreferences) -> Result<Vec<Entry>> {
+    let query = query.trim().replace('\\', "/").to_lowercase();
+    let mut statement = db
+        .prepare("SELECT id,title,path,accessed_at FROM projects")
+        .map_err(err)?;
+    let mut candidates = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(err)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(err)?;
+    candidates.retain(|(id, title, path, _)| {
+        !prefs.hidden.contains(id)
+            && (query.is_empty()
+                || title.to_lowercase().contains(&query)
+                || path.replace('\\', "/").to_lowercase().contains(&query))
+    });
+    candidates.sort_by(|a, b| {
+        prefs
+            .pinned
+            .contains(&b.0)
+            .cmp(&prefs.pinned.contains(&a.0))
+            .then(b.3.cmp(&a.3))
+            .then(a.0.cmp(&b.0))
+    });
+    candidates
+        .into_iter()
+        .take(12)
+        .map(|(id, _, _, _)| lookup(db, &id)?.ok_or("项目记录已变化，请刷新".into()))
+        .collect()
+}
+#[tauri::command]
+pub async fn workspace_library_update(
+    app: tauri::AppHandle,
+    id: Option<String>,
+    action: String,
+) -> Result<LibraryPreferences> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update_library(&mut db(&app)?, id.as_deref(), &action)
+    })
+    .await
+    .map_err(err)?
 }
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -112,6 +256,8 @@ fn record(
     let thumbnail =
         thumbnail.filter(|v| v.len() <= 100_000 && v.starts_with("data:image/jpeg;base64,"));
     db.execute("INSERT INTO projects(id,path,hash,title,pages,saved_at,accessed_at,thumbnail) VALUES(?1,?2,?3,?4,?5,?6,?6,?7) ON CONFLICT(id) DO UPDATE SET path=excluded.path,hash=excluded.hash,title=excluded.title,pages=excluded.pages,saved_at=excluded.saved_at,accessed_at=excluded.accessed_at,thumbnail=COALESCE(excluded.thumbnail,projects.thumbnail)", params![id, path.to_string_lossy(), hash, title, pages, now(), thumbnail]).map_err(err)?;
+    db.execute("UPDATE library_preferences SET hidden=0 WHERE id=?", [&id])
+        .map_err(err)?;
     lookup(db, &id)?.ok_or("项目索引记录失败".into())
 }
 fn directory(app: &tauri::AppHandle, db: &Connection) -> Result<PathBuf> {
@@ -243,13 +389,42 @@ fn save(
     Ok(entry)
 }
 #[tauri::command]
-pub async fn workspace_info(app: tauri::AppHandle) -> Result<Info> {
+pub async fn workspace_info(
+    app: tauri::AppHandle,
+    recovery_ids: Option<Vec<String>>,
+    search: Option<String>,
+) -> Result<Info> {
     tauri::async_runtime::spawn_blocking(move || {
-        let db = db(&app)?; let directory = directory(&app, &db)?.to_string_lossy().into_owned();
-        let mut statement = db.prepare("SELECT id,path,hash,title,pages,saved_at,accessed_at,thumbnail FROM projects ORDER BY accessed_at DESC LIMIT 12").map_err(err)?;
-        let projects = statement.query_map([], row).map_err(err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(err)?;
-        Ok(Info { directory, projects })
-    }).await.map_err(err)?
+        let db = db(&app)?;
+        let directory = directory(&app, &db)?.to_string_lossy().into_owned();
+        let preferences = preferences(&db)?;
+        let query = search.unwrap_or_default();
+        if query.chars().count() > 200 {
+            return Err("搜索内容最多 200 个字符".into());
+        }
+        let mut projects = recent_projects(&db, &query, &preferences)?;
+        let mut candidates = recovery_ids
+            .unwrap_or_default()
+            .into_iter()
+            .take(2000)
+            .filter(|id| !preferences.hidden.contains(id))
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|id| !preferences.pinned.contains(id));
+        for id in candidates.into_iter().take(12) {
+            if !projects.iter().any(|entry| entry.id == id) {
+                if let Some(entry) = lookup(&db, &id)? {
+                    projects.push(entry);
+                }
+            }
+        }
+        Ok(Info {
+            directory,
+            projects,
+            preferences,
+        })
+    })
+    .await
+    .map_err(err)?
 }
 #[tauri::command]
 pub async fn workspace_directory(app: tauri::AppHandle, path: String) -> Result<()> {
@@ -311,37 +486,304 @@ pub async fn workspace_lookup(app: tauri::AppHandle, id: String) -> Result<Optio
         .await
         .map_err(err)?
 }
+// A relocation only updates the registry. Neither the old nor the picked file is written.
+fn relocate(
+    db: &mut Connection,
+    id: &str,
+    target: &Path,
+    hash: &str,
+    previous_path: &str,
+    previous_hash: &str,
+    thumbnail: Option<String>,
+) -> Result<Entry> {
+    let (contents, actual) = read_snapshot(target)?;
+    if actual != hash {
+        return Err("所选文件已再次变化，请重新定位并核对版本；原关联保留".into());
+    }
+    if data(&contents)?.0 != id {
+        return Err("所选文件不是同一个项目，原关联保留".into());
+    }
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(err)?;
+    let previous = lookup(&tx, id)?.ok_or("原项目记录已不存在，请重新打开项目首页")?;
+    if previous.path != previous_path || previous.hash != previous_hash {
+        return Err("项目关联已变化，请重新打开卡片后定位；未覆盖现有关联".into());
+    }
+    let entry = record(&tx, target, hash, &contents, thumbnail)?;
+    tx.commit().map_err(err)?;
+    Ok(entry)
+}
+#[tauri::command]
+pub async fn workspace_relocate(
+    app: tauri::AppHandle,
+    id: String,
+    path: String,
+    hash: String,
+    previous_path: String,
+    previous_hash: String,
+    thumbnail: Option<String>,
+) -> Result<Entry> {
+    let target = PathBuf::from(path);
+    if !target.is_absolute() || !app.fs_scope().is_allowed(&target) {
+        return Err("请通过文件选择器授权要重新定位的项目文件".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        relocate(
+            &mut db(&app)?,
+            &id,
+            &target,
+            &hash,
+            &previous_path,
+            &previous_hash,
+            thumbnail,
+        )
+    })
+    .await
+    .map_err(err)?
+}
 #[tauri::command]
 pub async fn workspace_open(app: tauri::AppHandle, id: String) -> Result<Opened> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let db = db(&app)?;
-        let mut entry = lookup(&db, &id)?.ok_or("找不到项目记录，请重新定位文件")?;
-        let path = PathBuf::from(&entry.path);
-        let (contents, hash) = read_snapshot(&path)?;
-        let (file_id, _, _) = data(&contents)?;
-        if file_id != id {
-            return Err("文件的项目标识已变化，请通过打开项目文件重新选择".into());
-        }
-        let changed = hash != entry.hash;
-        entry.hash = hash;
+    tauri::async_runtime::spawn_blocking(move || open_project(&db(&app)?, &id, true))
+        .await
+        .map_err(err)?
+}
+#[tauri::command]
+pub async fn workspace_snapshot(app: tauri::AppHandle, id: String) -> Result<Opened> {
+    tauri::async_runtime::spawn_blocking(move || open_project(&db(&app)?, &id, false))
+        .await
+        .map_err(err)?
+}
+fn open_project(db: &Connection, id: &str, touch: bool) -> Result<Opened> {
+    let mut entry = lookup(db, id)?.ok_or("找不到项目记录，请重新定位文件")?;
+    let path = PathBuf::from(&entry.path);
+    let (contents, hash) = read_snapshot(&path)?;
+    let (file_id, _, _) = data(&contents)?;
+    if file_id != id {
+        return Err("文件的项目标识已变化，请通过打开项目文件重新选择".into());
+    }
+    let changed = hash != entry.hash;
+    entry.hash = hash;
+    if touch {
         entry.accessed_at = now();
         db.execute(
             "UPDATE projects SET accessed_at=? WHERE id=?",
             params![entry.accessed_at, id],
         )
         .map_err(err)?;
-        Ok(Opened {
-            entry,
-            contents,
-            changed,
-        })
+        db.execute("UPDATE library_preferences SET hidden=0 WHERE id=?", [id])
+            .map_err(err)?;
+    }
+    Ok(Opened {
+        entry,
+        contents,
+        changed,
     })
-    .await
-    .map_err(err)?
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relocation_changes_only_the_binding_then_future_saves_use_the_new_path() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("library.sqlite");
+        let mut db = connect(&store).unwrap();
+        let original = r#"{"projectId":"moved","title":"原文件","pages":[]}"#;
+        let old = save(&mut db, root.path(), original, None).unwrap();
+        update_library(&mut db, Some("moved"), "pin").unwrap();
+        let target = root.path().join("新位置.json");
+        let candidate = original.replace("原文件", "新位置版本");
+        std::fs::write(&target, &candidate).unwrap();
+        let (_, hash) = read_snapshot(&target).unwrap();
+        let moved = relocate(&mut db, "moved", &target, &hash, &old.path, &old.hash, None).unwrap();
+        assert_eq!(moved.path, target.to_string_lossy());
+        assert_eq!(std::fs::read_to_string(&old.path).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), candidate);
+        assert_eq!(preferences(&db).unwrap().pinned, vec!["moved"]);
+        drop(db);
+        let mut db = connect(&store).unwrap();
+        assert_eq!(lookup(&db, "moved").unwrap().unwrap().path, moved.path);
+        let edited = candidate.replace("新位置版本", "继续编辑");
+        let saved = save(&mut db, root.path(), &edited, None).unwrap();
+        assert_eq!(saved.path, moved.path);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), edited);
+        assert_eq!(std::fs::read_to_string(&old.path).unwrap(), original);
+    }
+    #[test]
+    fn relocation_rejects_wrong_identity_changed_candidate_and_stale_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = connect(&root.path().join("library.sqlite")).unwrap();
+        let data = r#"{"projectId":"original","title":"原项目","pages":[]}"#;
+        let old = save(&mut db, root.path(), data, None).unwrap();
+        let target = root.path().join("picked.json");
+        std::fs::write(&target, data.replace("original", "other")).unwrap();
+        let (_, wrong_hash) = read_snapshot(&target).unwrap();
+        assert!(relocate(
+            &mut db,
+            "original",
+            &target,
+            &wrong_hash,
+            &old.path,
+            &old.hash,
+            None
+        )
+        .is_err());
+        std::fs::write(&target, data).unwrap();
+        let (_, hash) = read_snapshot(&target).unwrap();
+        assert!(relocate(
+            &mut db,
+            "original",
+            &target,
+            &wrong_hash,
+            &old.path,
+            &old.hash,
+            None
+        )
+        .is_err());
+        assert!(relocate(
+            &mut db,
+            "original",
+            &target,
+            &hash,
+            "stale-path",
+            &old.hash,
+            None
+        )
+        .is_err());
+        assert!(relocate(
+            &mut db,
+            "original",
+            &target,
+            &hash,
+            &old.path,
+            "stale-hash",
+            None
+        )
+        .is_err());
+        assert_eq!(lookup(&db, "original").unwrap().unwrap().path, old.path);
+        assert_eq!(std::fs::read_to_string(&old.path).unwrap(), data);
+        std::fs::remove_file(&old.path).unwrap();
+        relocate(
+            &mut db, "original", &target, &hash, &old.path, &old.hash, None,
+        )
+        .unwrap();
+        assert!(
+            !Path::new(&old.path).exists(),
+            "relocation does not recreate the missing original"
+        );
+    }
+    #[test]
+    fn relocation_registry_collision_rolls_back_without_touching_files() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = connect(&root.path().join("library.sqlite")).unwrap();
+        let data = r#"{"projectId":"one","pages":[]}"#;
+        let old = save(&mut db, root.path(), data, None).unwrap();
+        let other = save(&mut db, root.path(), &data.replace("one", "two"), None).unwrap();
+        std::fs::write(&other.path, data).unwrap();
+        let (_, hash) = read_snapshot(Path::new(&other.path)).unwrap();
+        update_library(&mut db, Some("one"), "hide").unwrap();
+        assert!(relocate(
+            &mut db,
+            "one",
+            Path::new(&other.path),
+            &hash,
+            &old.path,
+            &old.hash,
+            None
+        )
+        .is_err());
+        assert_eq!(lookup(&db, "one").unwrap().unwrap().path, old.path);
+        assert_eq!(preferences(&db).unwrap().hidden, vec!["one"]);
+        assert_eq!(std::fs::read_to_string(&other.path).unwrap(), data);
+    }
+    #[test]
+    fn library_preferences_survive_restart_without_deleting_project_data() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("library.sqlite");
+        let mut db = connect(&store).unwrap();
+        let data = r#"{"projectId":"pinned","title":"中文项目","pages":[]}"#;
+        let entry = save(&mut db, root.path(), data, None).unwrap();
+        update_library(&mut db, Some("pinned"), "pin").unwrap();
+        drop(db);
+        let mut db = connect(&store).unwrap();
+        assert_eq!(preferences(&db).unwrap().pinned, vec!["pinned"]);
+        let hidden = update_library(&mut db, Some("pinned"), "hide").unwrap();
+        assert!(hidden.pinned.is_empty());
+        assert_eq!(hidden.hidden, vec!["pinned"]);
+        assert!(recent_projects(&db, "", &hidden).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&entry.path).unwrap(), data);
+        assert_eq!(lookup(&db, "pinned").unwrap().unwrap().hash, entry.hash);
+        assert_eq!(open_project(&db, "pinned", false).unwrap().contents, data);
+        update_library(&mut db, None, "restore-all").unwrap();
+        assert_eq!(
+            recent_projects(&db, "", &preferences(&db).unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
+        update_library(&mut db, Some("pinned"), "hide").unwrap();
+        save(&mut db, root.path(), data, None).unwrap();
+        assert!(preferences(&db).unwrap().hidden.is_empty());
+    }
+    #[test]
+    fn library_search_and_pins_work_beyond_the_recent_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = connect(&root.path().join("library.sqlite")).unwrap();
+        for i in 0..20 {
+            let id = format!("id-{i}");
+            let data = format!(r#"{{"projectId":"{id}","title":"说明_100% ÄBC {i}","pages":[]}}"#);
+            save(&mut db, root.path(), &data, None).unwrap();
+            db.execute(
+                "UPDATE projects SET accessed_at=? WHERE id=?",
+                params![i, id],
+            )
+            .unwrap();
+        }
+        let prefs = update_library(&mut db, Some("id-0"), "pin").unwrap();
+        let recent = recent_projects(&db, "", &prefs).unwrap();
+        assert_eq!(recent.len(), 12);
+        assert_eq!(recent[0].id, "id-0");
+        assert_eq!(recent[1].id, "id-19");
+        assert_eq!(recent_projects(&db, "äbc 0", &prefs).unwrap()[0].id, "id-0");
+        assert_eq!(recent_projects(&db, "%", &prefs).unwrap().len(), 12);
+        assert!(recent_projects(&db, "not-found", &prefs)
+            .unwrap()
+            .is_empty());
+        let path = lookup(&db, "id-1")
+            .unwrap()
+            .unwrap()
+            .path
+            .replace('\\', "/")
+            .to_uppercase();
+        assert_eq!(recent_projects(&db, &path, &prefs).unwrap()[0].id, "id-1");
+        for i in 1..12 {
+            update_library(&mut db, Some(&format!("id-{i}")), "pin").unwrap();
+        }
+        assert!(update_library(&mut db, Some("id-12"), "pin").is_err());
+        assert!(update_library(&mut db, Some("invalid"), "delete").is_err());
+        assert!(lookup(&db, "id-12").unwrap().is_some());
+        assert!(update_library(&mut db, Some("../escape"), "pin").is_err());
+        assert_eq!(preferences(&db).unwrap().pinned.len(), 12);
+    }
+    #[test]
+    fn snapshots_do_not_acknowledge_external_changes_or_touch_recent_order() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = connect(&root.path().join("library.sqlite")).unwrap();
+        let data = r#"{"projectId":"snapshot","title":"原版","pages":[]}"#;
+        let entry = save(&mut db, root.path(), data, None).unwrap();
+        db.execute("UPDATE projects SET accessed_at=1 WHERE id='snapshot'", [])
+            .unwrap();
+        let current = open_project(&db, "snapshot", false).unwrap();
+        assert!(!current.changed);
+        assert_eq!(lookup(&db, "snapshot").unwrap().unwrap().accessed_at, 1);
+        std::fs::write(&entry.path, data.replace("原版", "外部修改")).unwrap();
+        let changed = open_project(&db, "snapshot", false).unwrap();
+        assert!(changed.changed);
+        assert_eq!(lookup(&db, "snapshot").unwrap().unwrap().hash, entry.hash);
+        assert!(save(&mut db, root.path(), data, None).is_err());
+        assert!(open_project(&db, "snapshot", true).unwrap().changed);
+        assert!(lookup(&db, "snapshot").unwrap().unwrap().accessed_at > 1);
+    }
     #[test]
     fn default_save_restart_collision_and_external_conflict() {
         let root = tempfile::tempdir().unwrap();
@@ -386,15 +828,13 @@ mod tests {
             std::fs::read(root.path().join("A.json")).unwrap(),
             b"existing"
         );
-        assert!(
-            save(
-                &mut db,
-                root.path(),
-                r#"{"projectId":"../escape","pages":[]}"#,
-                None
-            )
-            .is_err()
-        );
+        assert!(save(
+            &mut db,
+            root.path(),
+            r#"{"projectId":"../escape","pages":[]}"#,
+            None
+        )
+        .is_err());
     }
     #[test]
     fn reserved_names_and_snapshots_are_safe() {
