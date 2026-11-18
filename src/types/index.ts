@@ -7,22 +7,35 @@ export interface Rect {
   h: number
 }
 
+export interface ShapeStyle {
+  width?: number
+  strokeStyle?: 'solid' | 'dashed' | 'none'
+  fill?: 'none' | 'solid'
+  fillColor?: string
+  fillOpacity?: number
+  radius?: number
+}
+export type ArrowStyle = 'legacy' | 'standard' | 'emphasis' | 'curved'
+
 export interface BoxAnnotation extends Rect {
   id: string
   kind: 'box'
   color: string
+  style?: ShapeStyle
 }
 
 export interface EllipseAnnotation extends Rect {
   id: string
   kind: 'ellipse'
   color: string
+  style?: ShapeStyle
 }
 
 export interface HighlightAnnotation extends Rect {
   id: string
   kind: 'highlight'
   color: string
+  opacity?: number
 }
 
 export interface RedactAnnotation extends Rect {
@@ -43,6 +56,8 @@ export interface NumberAnnotation {
   x: number
   y: number
   r?: number // 圆半径，默认 20
+  color?: string
+  badge?: 'circle' | 'ring' | 'square'
 }
 
 export interface ArrowAnnotation {
@@ -54,6 +69,8 @@ export interface ArrowAnnotation {
   y2: number
   color: string
   width?: number // 线宽，默认 ARROW_DEFAULT_WIDTH
+  arrowStyle?: ArrowStyle
+  control?: { x: number; y: number }
 }
 
 export interface LineAnnotation {
@@ -73,10 +90,23 @@ export interface FreehandAnnotation {
   points: { x: number; y: number }[]
   color: string
   width?: number
+  smoothed?: boolean
 }
 
 export const ARROW_DEFAULT_WIDTH = 6
 
+export interface AnnotationTextStyle {
+  /** 气泡文字颜色，可独立于边框；普通文字使用标注自身 color。 */
+  color?: string
+  weight?: 400 | 600 | 700
+  align?: 'left' | 'center' | 'right'
+  lineHeight?: number
+  outline?: boolean
+  backgroundColor?: string
+  backgroundOpacity?: number
+  padding?: number
+  radius?: number
+}
 export interface TextAnnotation {
   id: string
   kind: 'text'
@@ -86,6 +116,7 @@ export interface TextAnnotation {
   color: string
   size?: number // 字号，默认 26
   background?: boolean
+  textStyle?: AnnotationTextStyle
 }
 
 export interface CalloutAnnotation extends Rect {
@@ -93,6 +124,9 @@ export interface CalloutAnnotation extends Rect {
   kind: 'callout'
   text: string
   color: string
+  size?: number
+  textStyle?: AnnotationTextStyle
+  tail?: { x: number; y: number }
 }
 
 export interface MagnifierAnnotation extends Rect {
@@ -180,6 +214,12 @@ export interface AnnotationStyle {
   textSize: number
   mosaicTile: number
   strokeWidth: number
+  shape?: ShapeStyle
+  arrowStyle?: ArrowStyle
+  text?: AnnotationTextStyle
+  numberBadge?: 'circle' | 'ring' | 'square'
+  highlightOpacity?: number
+  smoothBrush?: boolean
 }
 
 export const DEFAULT_ANNOTATION_STYLE: AnnotationStyle = {
@@ -188,6 +228,8 @@ export const DEFAULT_ANNOTATION_STYLE: AnnotationStyle = {
   textSize: 26,
   mosaicTile: MOSAIC_DEFAULT_TILE,
   strokeWidth: 4,
+  shape: { width: 4, strokeStyle: 'solid', fill: 'none', fillOpacity: 0.15, radius: 0 },
+  arrowStyle: 'standard',
 }
 
 /** 标注样式预设（用户级，保存在浏览器本地，可跨项目复用） */

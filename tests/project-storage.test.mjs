@@ -199,3 +199,44 @@ test('locked and hidden flags survive project validation and storage', async () 
   assert.equal(restored.pages[0].annotations[0].locked, true)
   assert.equal(restored.pages[0].annotations[0].hidden, true)
 })
+
+test('shape variants and arrow contours survive storage while invalid styles reject without overwriting', async () => {
+  const data = project('drawing-styles', '样式往返')
+  data.pages[0].annotations = [
+    { id: 'b', kind: 'box', x: 0, y: 0, w: 50, h: 40, color: '#ff0000', style: { width: 3, fill: 'solid', fillColor: '#00ff00', fillOpacity: .3, strokeStyle: 'dashed', radius: 12 } },
+    { id: 'e', kind: 'ellipse', x: 20, y: 10, w: 40, h: 30, color: '#0000ff', style: { fill: 'solid', strokeStyle: 'none', fillOpacity: .5 } },
+    { id: 'a', kind: 'arrow', x1: 0, y1: 0, x2: 90, y2: 60, color: '#ff0000', width: 6, arrowStyle: 'emphasis' },
+    { id: 'old', kind: 'box', x: 1, y: 1, w: 10, h: 10, color: '#ff0000' },
+  ]
+  await idbSet(data)
+  const restored = await idbGet('project:drawing-styles')
+  assert.deepEqual(restored.pages[0].annotations, data.pages[0].annotations)
+  const invalid = structuredClone(data); invalid.pages[0].annotations[0].style.fillOpacity = 2
+  await assert.rejects(idbSet(invalid))
+  assert.equal((await idbGet('project:drawing-styles')).pages[0].annotations[0].style.fillOpacity, .3)
+})
+
+test('text, callout, badge and highlighter styles persist without flattening or losing crop originals', async () => {
+  const data = project('content-styles', '文本样式')
+  const annotations = [
+    { id: 't', kind: 'text', x: 10, y: 30, text: '第一行\n第二行', color: '#111827', size: 24, background: true, textStyle: { weight: 400, align: 'right', lineHeight: 1.5, outline: false, backgroundColor: '#fef08a', backgroundOpacity: .7, padding: 12, radius: 8 } },
+    { id: 'c', kind: 'callout', x: 5, y: 5, w: 90, h: 50, text: '说明', color: '#2563eb', size: 18, textStyle: { align: 'left', padding: 12, radius: 8 } },
+    { id: 'n', kind: 'number', x: 70, y: 70, r: 20, color: '#2563eb', badge: 'ring' },
+    { id: 'h', kind: 'highlight', x: 0, y: 0, w: 80, h: 30, color: '#facc15', opacity: .25 },
+  ]
+  data.pages[0].annotations = annotations; data.pages[0].orig = { image, width: 100, height: 100, annotations }
+  await idbSet(data)
+  const restored = await idbGet('project:content-styles')
+  assert.deepEqual(restored.pages[0].annotations, annotations); assert.deepEqual(restored.pages[0].orig.annotations, annotations)
+  const invalid = structuredClone(data); invalid.pages[0].annotations[0].textStyle.lineHeight = 0
+  await assert.rejects(idbSet(invalid))
+  assert.equal((await idbGet('project:content-styles')).pages[0].annotations[0].textStyle.lineHeight, 1.5)
+})
+
+test('curved controls, callout targets and smooth strokes survive save and cropped original round trips', async()=>{
+  const data=project('advanced-tools','高级工具')
+  const annotations=[{id:'curve',kind:'arrow',x1:0,y1:0,x2:90,y2:30,color:'#ef4444',width:4,arrowStyle:'curved',control:{x:40,y:80}},{id:'bubble',kind:'callout',x:10,y:10,w:60,h:40,text:'提示',color:'#2563eb',tail:{x:90,y:90}},{id:'brush',kind:'freehand',points:[{x:0,y:0},{x:10,y:10},{x:20,y:0}],color:'#ef4444',smoothed:true}]
+  data.pages[0].annotations=annotations;data.pages[0].orig={image,width:100,height:100,annotations}
+  await idbSet(data);const restored=await idbGet('project:advanced-tools');assert.deepEqual(restored.pages[0].annotations,annotations);assert.deepEqual(restored.pages[0].orig.annotations,annotations)
+  const invalid=structuredClone(data);invalid.pages[0].annotations[0].control.x=Infinity;await assert.rejects(idbSet(invalid));assert.equal((await idbGet('project:advanced-tools')).pages[0].annotations[0].control.x,40)
+})

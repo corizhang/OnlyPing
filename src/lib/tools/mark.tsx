@@ -4,6 +4,7 @@ import { arrowTool } from './arrow'
 import { lineTool } from './line'
 import { freehandTool } from './freehand'
 import type { MarkAnnotation, MarkCreationStyle, MarkKind, MarkViewOptions } from './types'
+import { arrowCurvePoint } from './arrow-geometry'
 
 export const markTools = { number: numberTool, arrow: arrowTool, line: lineTool, freehand: freehandTool }
 export const isMarkKind = (kind: string): kind is MarkKind => kind in markTools
@@ -52,9 +53,10 @@ function linearSelection(annotation: Extract<MarkAnnotation, { kind: 'arrow' | '
   )
   return (
     <>
-      <line x1={annotation.x1} y1={annotation.y1} x2={annotation.x2} y2={annotation.y2} stroke="#2563eb" strokeWidth={2} strokeDasharray="5 4" pointerEvents="none" />
+      {annotation.kind === 'line' && <line x1={annotation.x1} y1={annotation.y1} x2={annotation.x2} y2={annotation.y2} stroke="#2563eb" strokeWidth={2} strokeDasharray="5 4" pointerEvents="none" />}
       {endpoint('p1')}
       {endpoint('p2')}
+      {annotation.kind === 'arrow' && annotation.arrowStyle === 'curved' && (()=>{const p=arrowCurvePoint(annotation,.5);return <circle cx={p.x} cy={p.y} r={options.handleR*1.2} fill="#dbeafe" stroke="#2563eb" strokeWidth={2} aria-label="箭头弯曲控制点" style={{cursor:'move'}} onPointerDown={event=>options.onCurveDown?.(event)}/>})()}
     </>
   )
 }

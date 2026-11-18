@@ -1,6 +1,6 @@
 import type { ContentTool } from './types'
 
-import { textLayout as textBounds } from './text-layout'
+import { textLayout as textBounds, ANNOTATION_FONT } from './text-layout'
 
 export const textTool: ContentTool<'text'> = {
   kind: 'text',
@@ -13,46 +13,47 @@ export const textTool: ContentTool<'text'> = {
     color: style.color,
     size: style.textSize ?? 26,
     background: style.background ?? false,
+    textStyle: style.textStyle ?? { weight: 600, outline: false },
   }),
   hit: (a, x, y) => {
     const bounds = textBounds(a)
     return x >= bounds.x && x <= bounds.x + bounds.w && y >= bounds.y && y <= bounds.y + bounds.h
   },
   draw: (ctx, a) => {
-    const size = a.size ?? 26
-    const lines = a.text.split('\n')
-    const lineHeight = Math.round(size * 1.3)
+    const { size, lines, lineHeight, style, block, textX } = textBounds(a)
     ctx.save()
-    ctx.font = `bold ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
+    ctx.font = `${style.weight} ${size}px ${ANNOTATION_FONT}`
+    ctx.textAlign = style.align
     ctx.textBaseline = 'alphabetic'
     ctx.lineJoin = 'round'
-    const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width), size * 0.6)
     if (a.background) {
-      ctx.fillStyle = '#ffffff'
+      ctx.fillStyle = style.backgroundColor
+      ctx.globalAlpha = style.backgroundOpacity
       ctx.strokeStyle = '#d1d5db'
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.roundRect(a.x - 6, a.y - size - 4, textWidth + 12, lines.length * lineHeight + 10, 4)
+      ctx.roundRect(block.x, block.y, block.w, block.h, style.radius)
       ctx.fill()
+      ctx.globalAlpha = 1
       ctx.stroke()
     }
     ctx.strokeStyle = 'rgba(255,255,255,0.95)'
     ctx.lineWidth = Math.max(4, size / 4)
     lines.forEach((line, index) => {
       const lineY = a.y + index * lineHeight
-      ctx.strokeText(line, a.x, lineY)
+      if (style.outline) ctx.strokeText(line, textX, lineY)
       ctx.fillStyle = a.color
-      ctx.fillText(line, a.x, lineY)
+      ctx.fillText(line, textX, lineY)
     })
     ctx.restore()
   },
-  view: (a, { selected }) => {
-    const { size, lines, lineHeight, textWidth, x, y, w, h } = textBounds(a)
+  view: (a, { selected, editing }) => {
+    const { size, lines, lineHeight, style, block, textX, x, y, w, h } = textBounds(a)
     return (
       <>
-        {a.background && <rect x={a.x - 6} y={a.y - size - 4} width={textWidth + 12} height={lines.length * lineHeight + 10} rx={4} fill="#ffffff" stroke="#d1d5db" strokeWidth={1} />}
-        <text x={a.x} y={a.y} fontSize={size} fontWeight={700} fill={a.color} stroke="rgba(255,255,255,0.95)" strokeWidth={Math.max(4, size / 4)} paintOrder="stroke" fontFamily='"PingFang SC", "Microsoft YaHei", sans-serif'>
-          {lines.map((line, index) => <tspan key={index} x={a.x} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>)}
+        {a.background && <><rect x={block.x} y={block.y} width={block.w} height={block.h} rx={style.radius} fill={style.backgroundColor} fillOpacity={style.backgroundOpacity} /><rect x={block.x} y={block.y} width={block.w} height={block.h} rx={style.radius} fill="none" stroke="#d1d5db" strokeWidth={1} /></>}
+        <text visibility={editing ? 'hidden' : undefined} x={textX} y={a.y} textAnchor={style.align === 'center' ? 'middle' : style.align === 'right' ? 'end' : 'start'} fontSize={size} fontWeight={style.weight} fill={a.color} stroke={style.outline ? 'rgba(255,255,255,0.95)' : 'none'} strokeWidth={Math.max(4, size / 4)} paintOrder="stroke" fontFamily={ANNOTATION_FONT}>
+          {lines.map((line, index) => <tspan key={index} x={textX} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>)}
         </text>
         {selected && (
           <rect

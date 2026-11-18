@@ -20,7 +20,7 @@ export const TOOL_DEFINITIONS = [
   { value: 'arrow', label: '箭头', shortcut: 'A', interaction: 'endpoints', parameter: 'strokeWidth' },
   { value: 'line', label: '直线', shortcut: 'L', interaction: 'endpoints', parameter: 'strokeWidth' },
   { value: 'freehand', label: '自由画笔', shortcut: 'P', interaction: 'freehand', parameter: 'strokeWidth' },
-  { value: 'callout', label: '说明气泡', shortcut: 'Q', interaction: 'rectangle' },
+  { value: 'callout', label: '说明气泡', shortcut: 'Q', interaction: 'rectangle', parameter: 'textSize' },
   { value: 'magnifier', label: '局部放大', shortcut: 'Z', interaction: 'rectangle', parameter: 'zoom' },
   { value: 'mosaic', label: '打码', shortcut: 'M', interaction: 'rectangle', parameter: 'mosaicTile' },
   { value: 'text', label: '文字', shortcut: 'T', interaction: 'text', parameter: 'textSize' },

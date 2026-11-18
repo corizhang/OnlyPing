@@ -1,54 +1,41 @@
-import type { CalloutAnnotation } from '@/types'
 import type { ContentTool } from './types'
 import { calloutLayout, ANNOTATION_FONT } from './text-layout'
-
-const tailSize = (a: CalloutAnnotation) => Math.min(18, Math.max(10, a.w * 0.12))
-const CALLOUT_FONT_SIZE = 16
-const CALLOUT_LINE_HEIGHT = 20
-
-function calloutPath(a: CalloutAnnotation): string {
-  const tail = tailSize(a)
-  return `M${a.x + 10} ${a.y} H${a.x + a.w - 10} Q${a.x + a.w} ${a.y} ${a.x + a.w} ${a.y + 10} V${a.y + a.h - 10} Q${a.x + a.w} ${a.y + a.h} ${a.x + a.w - 10} ${a.y + a.h} H${a.x + tail + 16} L${a.x + 8} ${a.y + a.h + tail} L${a.x + 12} ${a.y + a.h} H${a.x + 10} Q${a.x} ${a.y + a.h} ${a.x} ${a.y + a.h - 10} V${a.y + 10} Q${a.x} ${a.y} ${a.x + 10} ${a.y} Z`
-}
+import { calloutPath, calloutTail } from './callout-geometry'
 
 export const calloutTool: ContentTool<'callout'> = {
   kind: 'callout',
-  create: (id, x, y, style) => ({ id, kind: 'callout', x, y, w: 0, h: 0, text: '', color: style.color }),
-  hit: (a, x, y) => { const layout = calloutLayout(a); return x >= a.x - 6 && x <= a.x + layout.w + 6 && y >= a.y - 8 && y <= a.y + layout.h + 10 },
+  create: (id, x, y, style) => ({ id, kind: 'callout', x, y, w: 0, h: 0, text: '', color: style.color, size: style.textSize ?? 18, textStyle: style.textStyle ?? { weight: 600, align: 'left', outline: false, padding: 12, radius: 8, lineHeight: 1.4 } }),
+  hit: (a, x, y) => { const layout = calloutLayout(a),tip=calloutTail({...a,...layout}); return (x >= a.x - 6 && x <= a.x + layout.w + 6 && y >= a.y - 8 && y <= a.y + layout.h + 6)||Math.hypot(x-tip.x,y-tip.y)<=8 },
   draw: (ctx, annotation) => {
     const layout = calloutLayout(annotation)
     const a = { ...annotation, w: layout.w, h: layout.h }
-    const tail = tailSize(a)
+    const { style, size, lineHeight, baseline } = layout
+    const textX = a.x + (style.align === 'center' ? a.w / 2 : style.align === 'right' ? a.w - style.padding : style.padding)
     ctx.save()
-    ctx.fillStyle = '#fff'
+    ctx.fillStyle = style.backgroundColor
+    ctx.globalAlpha = style.backgroundOpacity
     ctx.strokeStyle = a.color
     ctx.lineWidth = 2.5
-    ctx.beginPath()
-    ctx.moveTo(a.x + 12, a.y + a.h - 1)
-    ctx.lineTo(a.x + 8, a.y + a.h + tail)
-    ctx.lineTo(a.x + tail + 16, a.y + a.h - 1)
-    ctx.closePath()
-    ctx.fill()
-    ctx.stroke()
-    ctx.beginPath()
-    ctx.roundRect(a.x, a.y, a.w, a.h, 10)
-    ctx.fill()
-    ctx.stroke()
-    ctx.fillStyle = a.color
-    ctx.font = `600 ${CALLOUT_FONT_SIZE}px "PingFang SC", "Microsoft YaHei", sans-serif`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'top'
-    layout.lines.forEach((line, index) => ctx.fillText(line, a.x + a.w / 2, a.y + 10 + index * CALLOUT_LINE_HEIGHT, Math.max(10, a.w - 20)))
+    const path = new Path2D(calloutPath(a))
+    ctx.fill(path)
+    ctx.globalAlpha = 1
+    ctx.stroke(path)
+    ctx.fillStyle = style.color ?? a.color
+    ctx.font = `${style.weight} ${size}px ${ANNOTATION_FONT}`
+    ctx.textAlign = style.align
+    ctx.textBaseline = 'alphabetic'
+    layout.lines.forEach((line, index) => ctx.fillText(line, textX, a.y + style.padding + baseline + index * lineHeight))
     ctx.restore()
   },
   view: (annotation) => {
-    const { lines, w, h } = calloutLayout(annotation)
+    const { lines, w, h, style, size, lineHeight, baseline } = calloutLayout(annotation)
     const a = { ...annotation, w, h }
+    const textX = a.x + (style.align === 'center' ? a.w / 2 : style.align === 'right' ? a.w - style.padding : style.padding)
     return (
       <>
-        <path d={calloutPath(a)} fill="#fff" stroke={a.color} strokeWidth={2.5} />
-        <text x={a.x + a.w / 2} y={a.y + 10} textAnchor="middle" dominantBaseline="text-before-edge" fill={a.color} fontSize={CALLOUT_FONT_SIZE} fontWeight={600} fontFamily={ANNOTATION_FONT} pointerEvents="none">
-          {lines.map((line, index) => <tspan key={index} x={a.x + a.w / 2} dy={index === 0 ? 0 : CALLOUT_LINE_HEIGHT}>{line}</tspan>)}
+        <path d={calloutPath(a)} fill={style.backgroundColor} fillOpacity={style.backgroundOpacity} stroke={a.color} strokeWidth={2.5} />
+        <text x={textX} y={a.y + style.padding + baseline} textAnchor={style.align === 'center' ? 'middle' : style.align === 'right' ? 'end' : 'start'} fill={style.color ?? a.color} fontSize={size} fontWeight={style.weight} fontFamily={ANNOTATION_FONT} pointerEvents="none">
+          {lines.map((line, index) => <tspan key={index} x={textX} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>)}
         </text>
       </>
     )

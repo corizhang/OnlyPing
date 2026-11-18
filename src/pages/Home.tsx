@@ -3,6 +3,10 @@ import { checkTask, isTaskCancelled, taskCheckpoint, type RenderTask } from '@/l
 import AnnotationList from '@/components/AnnotationList'
 import { copySelection, editableSelection } from '@/lib/selection'
 import AnnotationParameters from '@/components/AnnotationParameters'
+import DrawingParameters from '@/components/DrawingParameters'
+import ContentParameters from '@/components/ContentParameters'
+import { normalizeToolStyle, restoreToolStyles } from '@/lib/tool-style-preferences'
+import { newShapeStyle } from '@/lib/tools/shape-geometry'
 import { cropAnnotation, duplicateAnnotation } from '@/lib/tools/annotation-geometry'
 import { TOOL_DEFINITIONS, TOOL_CATALOG, TOOL_PARAMETERS, annotationLabel } from '@/lib/tools/catalog'
 import ToolIcon from '@/components/ToolIcon'
@@ -95,9 +99,9 @@ import { exportAnnotatedImages, exportDocx, exportLongImage, exportPdf } from '@
 import { imageExportWarnings, planImageExport, type ImageExportOptions, type ImageExportSelection } from '@/lib/image-export'
 import { clearImageCache, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
-import { computeNumberStarts, DEFAULT_ANNOTATION_STYLE, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
+import { computeNumberStarts, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
 
-const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#2563eb', '#7c3aed', '#111827']
+const COLORS = ['#ef4444', '#f59e0b', '#facc15', '#10b981', '#2563eb', '#7c3aed', '#111827']
 
 /** 从 localStorage 读取并校验 JSON，损坏时返回 null */
 const loadJSON = <T,>(key: string, guard: (v: unknown) => v is T): T | null => {
@@ -156,9 +160,9 @@ export default function Home() {
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null)
   const [tool, setTool] = useState<Tool>('select')
   // 新建标注的默认样式（用户级偏好，持久化到 localStorage）
-  const [annStyle, setAnnStyle] = useState<AnnotationStyle>(
-    () => ({ ...DEFAULT_ANNOTATION_STYLE, ...(loadJSON('mbz-ann-style', isStyle) ?? {}) })
-  )
+  const [toolStyles, setToolStyles] = useState(() => restoreToolStyles(loadJSON('mbz-tool-styles', (value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)), loadJSON('mbz-ann-style', isStyle)))
+  const annStyle = toolStyles[tool]
+  const setAnnStyle = (next: AnnotationStyle | ((current: AnnotationStyle) => AnnotationStyle)) => setToolStyles(current => ({ ...current, [tool]: normalizeToolStyle(typeof next === 'function' ? next(current[tool]) : next, tool) }))
   // 标注样式预设（用户级，跨项目复用）
   const [presets, setPresets] = useState<StylePreset[]>(
     () => loadJSON('mbz-style-presets', isPresetArray) ?? []
@@ -169,6 +173,7 @@ export default function Home() {
   const [selectedAnnIds, setSelectedAnnIds] = useState<string[]>([])
   const selectedAnnId = selectedAnnIds.at(-1) ?? null
   const setSelectedAnnId = useCallback((id: string | null) => setSelectedAnnIds(id ? [id] : []), [])
+  const activateTool = (next:Tool) => { setSelectedAnnId(null); setTool(next) }
   const [editTextRequest, setEditTextRequest] = useState(0)
   const [aiConfig, setAIConfig] = useState(loadAIConfig)
   const [aiConfigReady, setAIConfigReady] = useState(!isDesktop())
@@ -471,8 +476,8 @@ export default function Home() {
 
   // 标注样式与预设持久化到 localStorage（用户级偏好）
   useEffect(() => {
-    localStorage.setItem('mbz-ann-style', JSON.stringify(annStyle))
-  }, [annStyle])
+    localStorage.setItem('mbz-tool-styles', JSON.stringify(toolStyles))
+  }, [toolStyles])
   useEffect(() => {
     localStorage.setItem('mbz-style-presets', JSON.stringify(presets))
   }, [presets])
@@ -485,10 +490,15 @@ export default function Home() {
         ...p,
         annotations: p.annotations.map((a) => {
           if (a.locked) return a
-          if (a.kind === 'box' || a.kind === 'ellipse' || a.kind === 'highlight' || a.kind === 'line' || a.kind === 'freehand' || a.kind === 'callout') return { ...a, color: annStyle.color }
-          if (a.kind === 'text') return { ...a, color: annStyle.color, size: annStyle.textSize }
-          if (a.kind === 'number') return { ...a, r: annStyle.numberR }
-          if (a.kind === 'mosaic') return { ...a, tile: annStyle.mosaicTile }
+          const defaults = toolStyles[a.kind === 'text' && a.background ? 'text-box' : a.kind]
+          if (a.kind === 'box' || a.kind === 'ellipse') return { ...a, color: defaults.color, style: newShapeStyle(defaults.shape) }
+          if (a.kind === 'arrow') return { ...a, color: defaults.color, width: defaults.strokeWidth, arrowStyle: defaults.arrowStyle ?? 'standard' }
+          if (a.kind === 'line') return { ...a, color: defaults.color, width: defaults.strokeWidth }
+          if (a.kind === 'freehand') return { ...a, color: defaults.color, width: defaults.strokeWidth, smoothed: defaults.smoothBrush }
+          if (a.kind === 'highlight') return { ...a, color: defaults.color, opacity: defaults.highlightOpacity }
+          if (a.kind === 'callout' || a.kind === 'text') return { ...a, color: defaults.color, size: defaults.textSize, textStyle: defaults.text }
+          if (a.kind === 'number') return { ...a, r: defaults.numberR, color: defaults.color, badge: defaults.numberBadge }
+          if (a.kind === 'mosaic') return { ...a, tile: defaults.mosaicTile }
           return a
         }),
       }))
@@ -503,7 +513,7 @@ export default function Home() {
   }
 
   const applyPreset = (p: StylePreset) => {
-    setAnnStyle({ color: p.color, numberR: p.numberR, textSize: p.textSize, mosaicTile: p.mosaicTile, strokeWidth: p.strokeWidth ?? 4 })
+    setAnnStyle(normalizeToolStyle(p, tool))
   }
 
   const deletePreset = (id: string) => setPresets((prev) => prev.filter((p) => p.id !== id))
@@ -637,7 +647,7 @@ export default function Home() {
       const nextTool = TOOL_SHORTCUTS[key]
       if (nextTool) {
         e.preventDefault()
-        setTool(nextTool)
+        activateTool(nextTool)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -698,7 +708,7 @@ export default function Home() {
     return () => observer.disconnect()
   }, [selectedPageId, canvasWidth, canvasHeight, zoomMode, rightOpen])
 
-  const updateAnnSize = (patch: { size?: number; r?: number; tile?: number; width?: number; zoom?: number; color?: string; text?: string }) => {
+  const updateAnnSize = (patch: Partial<Annotation>) => {
     if (!selectedPage || !selectedAnnId) return
     updatePage(selectedPage.id, {
       annotations: selectedPage.annotations.map((a) =>
@@ -1349,18 +1359,18 @@ export default function Home() {
         <div className="flex h-full w-12 shrink-0 items-center justify-center border-r border-white/10 text-[#b9b9b9]" title="当前工具">{TOOLS.find(t => t.value === tool)?.icon}</div>
         <span className="shrink-0 px-3 text-xs font-medium text-[#d8d8d8]">{TOOLS.find(t => t.value === tool)?.label}</span>
           <div className="ps-options flex min-w-0 flex-1 items-center gap-2 overflow-x-auto px-3 text-xs">
-            {(!selectedAnn || 'color' in selectedAnn) && <div className="flex shrink-0 items-center gap-0.5" aria-label="标注颜色">
+            {(!selectedAnn || 'color' in selectedAnn || selectedAnn.kind === 'number') && <div className="flex shrink-0 items-center gap-0.5" aria-label="标注颜色">
               {COLORS.map((c) => (
                 <Button
                   key={c}
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => selectedAnn && 'color' in selectedAnn ? updateAnnSize({ color: c }) : setColor(c)}
+                  onClick={() => selectedAnn && ('color' in selectedAnn || selectedAnn.kind === 'number') ? updateAnnSize({ color: c }) : setColor(c)}
                   aria-label={`标注颜色 ${c}`}
-                  aria-pressed={(selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c}
+                  aria-pressed={(selectedAnn && ('color' in selectedAnn || selectedAnn.kind === 'number') ? selectedAnn.color ?? '#ef4444' : color) === c}
                   className={`size-7 rounded-md p-0 transition-colors ${
-                    (selectedAnn && 'color' in selectedAnn ? selectedAnn.color : color) === c ? 'bg-white/20 ring-1 ring-white/70' : 'hover:bg-white/10'
+                    (selectedAnn && ('color' in selectedAnn || selectedAnn.kind === 'number') ? selectedAnn.color ?? '#ef4444' : color) === c ? 'bg-white/20 ring-1 ring-white/70' : 'hover:bg-white/10'
                   }`}
                   title={`标注颜色 ${c}`}
                 >
@@ -1375,6 +1385,11 @@ export default function Home() {
               return <label className="flex shrink-0 items-center gap-2 border-l border-white/10 pl-3 text-slate-300">{label}<Slider min={min} max={max} value={[annStyle[key]]} onValueChange={([value]) => setAnnStyle(v => ({ ...v, [key]: value }))} className="w-28" aria-label={label} /><span className="min-w-6 rounded-md bg-white/10 px-1.5 py-1 text-center tabular-nums text-white">{annStyle[key]}</span></label>
             })()}
 
+            {!selectedAnn && (tool === 'box' || tool === 'ellipse') && <DrawingParameters annotation={{ id: 'defaults', kind: tool, x: 0, y: 0, w: 200, h: 120, color, style: newShapeStyle(annStyle.shape, annStyle.strokeWidth) }} onChange={patch => { if ('style' in patch) setAnnStyle(current => ({ ...current, shape: patch.style })) }} />}
+            {!selectedAnn && tool === 'arrow' && <DrawingParameters annotation={{ id: 'defaults', kind: 'arrow', x1: 0, y1: 0, x2: 100, y2: 0, color, arrowStyle: annStyle.arrowStyle ?? 'standard' }} onChange={patch => { if ('arrowStyle' in patch) setAnnStyle(current => ({ ...current, arrowStyle: patch.arrowStyle })) }} />}
+            {!selectedAnn&&tool==='freehand'&&<Button variant="ghost" size="sm" aria-label="平滑笔迹" aria-pressed={annStyle.smoothBrush!==false} onClick={()=>setAnnStyle(current=>({...current,smoothBrush:current.smoothBrush===false}))}>平滑笔迹</Button>}
+            {!selectedAnn && (tool === 'text' || tool === 'text-box' || tool === 'callout' || tool === 'number' || tool === 'highlight') && <ContentParameters allowBackgroundToggle={false} annotation={tool === 'number' ? { id: 'defaults', kind: 'number', x: 0, y: 0, r: annStyle.numberR, color, badge: annStyle.numberBadge } : tool === 'highlight' ? { id: 'defaults', kind: 'highlight', x: 0, y: 0, w: 100, h: 60, color, opacity: annStyle.highlightOpacity } : tool === 'callout' ? { id: 'defaults', kind: 'callout', x: 0, y: 0, w: 200, h: 80, text: '', color, size: annStyle.textSize, textStyle: annStyle.text } : { id: 'defaults', kind: 'text', x: 0, y: 0, text: '', color, size: annStyle.textSize, background: tool === 'text-box', textStyle: annStyle.text }} onChange={patch => { setAnnStyle(current => ({ ...current, ...('color' in patch ? { color: patch.color } : {}), ...('textStyle' in patch ? { text: patch.textStyle } : {}), ...('badge' in patch ? { numberBadge: patch.badge } : {}), ...('opacity' in patch ? { highlightOpacity: patch.opacity } : {}) })) }} />}
+
             {/* 样式模板：新建标注默认样式 + 预设管理 */}
             <Popover>
               <PopoverTrigger asChild>
@@ -1385,7 +1400,7 @@ export default function Home() {
               <PopoverContent className="w-72 border-white/10 bg-slate-950 text-slate-100 shadow-2xl" align="start">
                 <div className="space-y-3">
                   <div className="text-xs font-medium text-slate-300">
-                    新建标注默认样式（与当前对象属性独立）
+                    {TOOL_CATALOG[tool].label}默认样式（与当前对象独立）
                   </div>
                   <div className="flex gap-2">{COLORS.map(c => <button key={c} aria-label={`新建默认颜色 ${c}`} aria-pressed={annStyle.color === c} className="size-6 rounded-full border-2 aria-pressed:border-white" style={{ background: c }} onClick={() => setColor(c)} />)}</div>
                   {(
@@ -1395,7 +1410,7 @@ export default function Home() {
                       { key: 'mosaicTile', label: '打码强度', min: MOSAIC_MIN_TILE, max: MOSAIC_MAX_TILE },
                       { key: 'strokeWidth', label: '线宽', min: 2, max: 16 },
                     ] as const
-                  ).map(({ key, label, min, max }) => (
+                  ).filter(item => item.key === TOOL_CATALOG[tool].parameter).map(({ key, label, min, max }) => (
                     <label key={key} className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300">
                       {label}
                       <Slider
@@ -1417,12 +1432,12 @@ export default function Home() {
                     size="sm"
                     className="h-8 w-full bg-white/10 text-xs text-slate-100 hover:bg-white/15"
                     disabled={!pages.length}
-                    title="把当前样式应用到所有页面的已有标注（可用 Ctrl+Z 撤销）"
+                    title="按每种工具各自的默认样式更新已有标注（可用 Ctrl+Z 撤销）"
                     onClick={() => {
-                      if (window.confirm('将把全部已有标注统一为当前样式（可用撤销恢复），继续？')) applyStyleToAll()
+                      if (window.confirm('将按各工具的默认样式更新全部已有标注（锁定和隐私遮挡保持不变，可用撤销恢复），继续？')) applyStyleToAll()
                     }}
                   >
-                    套用当前样式到全部页面
+                    按工具默认样式更新全部页面
                   </Button>
 
                   <div className="border-t pt-3">
@@ -1542,7 +1557,7 @@ export default function Home() {
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      onClick={() => setTool(t.value)}
+                      onClick={() => activateTool(t.value)}
                       draggable={reorderingTools}
                       onDragStart={e => { draggedTool.current = t.value; e.dataTransfer.effectAllowed = 'move' }}
                       onDragOver={e => { if (reorderingTools) e.preventDefault() }}
@@ -1616,6 +1631,7 @@ export default function Home() {
                 numberR={annStyle.numberR}
                 textSize={annStyle.textSize}
                 strokeWidth={annStyle.strokeWidth}
+                drawingStyle={annStyle}
                 selectedId={selectedAnnId}
                 selectedIds={selectedAnnIds}
                 onSelectionChange={setSelectedAnnIds}

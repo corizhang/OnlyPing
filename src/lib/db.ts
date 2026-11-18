@@ -300,14 +300,19 @@ const rect = { ...point, w: positive, h: positive }
 const base = { id: z.string().min(1), locked: z.boolean().optional(), hidden: z.boolean().optional() }
 const color = z.string().regex(/^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)$/)
 const optionalSize = positive.optional()
+const shapeStyle = z.object({ width: positive.max(64).optional(), strokeStyle: z.enum(['solid', 'dashed', 'none']).optional(), fill: z.enum(['none', 'solid']).optional(), fillColor: color.optional(), fillOpacity: finite.min(0).max(1).optional(), radius: finite.min(0).max(200).optional() }).optional()
+const annotationTextStyle = z.object({ color: color.optional(), weight: z.union([z.literal(400), z.literal(600), z.literal(700)]).optional(), align: z.enum(['left', 'center', 'right']).optional(), lineHeight: finite.min(1).max(3).optional(), outline: z.boolean().optional(), backgroundColor: color.optional(), backgroundOpacity: finite.min(0).max(1).optional(), padding: finite.min(0).max(40).optional(), radius: finite.min(0).max(40).optional() }).optional()
 const annotation = z.discriminatedUnion('kind', [
-  z.object({ ...base, kind: z.enum(['box', 'ellipse', 'highlight', 'redact']), ...rect, color }),
+  z.object({ ...base, kind: z.enum(['box', 'ellipse']), ...rect, color, style: shapeStyle }),
+  z.object({ ...base, kind: z.literal('highlight'), ...rect, color, opacity: finite.min(0).max(1).optional() }),
+  z.object({ ...base, kind: z.literal('redact'), ...rect, color }),
   z.object({ ...base, kind: z.literal('mosaic'), ...rect, tile: optionalSize }),
-  z.object({ ...base, kind: z.literal('number'), ...point, r: optionalSize }),
-  z.object({ ...base, kind: z.enum(['arrow', 'line']), x1: finite, y1: finite, x2: finite, y2: finite, color, width: optionalSize }),
-  z.object({ ...base, kind: z.literal('freehand'), points: z.array(z.object(point)).min(1), color, width: optionalSize }),
-  z.object({ ...base, kind: z.literal('text'), ...point, text: z.string(), color, size: optionalSize, background: z.boolean().optional() }),
-  z.object({ ...base, kind: z.literal('callout'), ...rect, text: z.string(), color }),
+  z.object({ ...base, kind: z.literal('number'), ...point, r: optionalSize, color: color.optional(), badge: z.enum(['circle', 'ring', 'square']).optional() }),
+  z.object({ ...base, kind: z.literal('arrow'), x1: finite, y1: finite, x2: finite, y2: finite, color, width: optionalSize, arrowStyle: z.enum(['legacy', 'standard', 'emphasis', 'curved']).optional(), control: z.object(point).optional() }),
+  z.object({ ...base, kind: z.literal('line'), x1: finite, y1: finite, x2: finite, y2: finite, color, width: optionalSize }),
+  z.object({ ...base, kind: z.literal('freehand'), points: z.array(z.object(point)).min(1), color, width: optionalSize, smoothed: z.boolean().optional() }),
+  z.object({ ...base, kind: z.literal('text'), ...point, text: z.string(), color, size: optionalSize, background: z.boolean().optional(), textStyle: annotationTextStyle }),
+  z.object({ ...base, kind: z.literal('callout'), ...rect, text: z.string(), color, size: optionalSize, textStyle: annotationTextStyle, tail: z.object(point).optional() }),
   z.object({ ...base, kind: z.literal('magnifier'), ...rect, zoom: positive }),
 ])
 const image = z.string().regex(/^data:image\/(png|jpeg|webp|gif);base64,/)

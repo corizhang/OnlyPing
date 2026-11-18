@@ -2,7 +2,7 @@ import type { Annotation, AnnotationStyle } from '@/types'
 import type { PointerEvent, ReactNode } from 'react'
 export type AreaKind = 'box' | 'ellipse' | 'highlight' | 'redact' | 'mosaic'
 export type AreaAnnotation = Extract<Annotation, { kind: AreaKind }>
-export type AreaCreationStyle = Pick<AnnotationStyle, 'color' | 'mosaicTile'>
+export type AreaCreationStyle = Pick<AnnotationStyle, 'color' | 'mosaicTile'> & Partial<Pick<AnnotationStyle, 'shape' | 'strokeWidth' | 'highlightOpacity'>>
 export interface AreaTool<K extends AreaKind> {
   kind: K
   create(id: string, x: number, y: number, style: AreaCreationStyle): Extract<Annotation, { kind: K }>
@@ -14,13 +14,14 @@ export const rectHit = (a: { x: number; y: number; w: number; h: number }, x: nu
 
 export type MarkKind = 'number' | 'arrow' | 'line' | 'freehand'
 export type MarkAnnotation = Extract<Annotation, { kind: MarkKind }>
-export type MarkCreationStyle = Pick<AnnotationStyle, 'color' | 'numberR' | 'strokeWidth'>
+export type MarkCreationStyle = Pick<AnnotationStyle, 'color' | 'numberR' | 'strokeWidth' | 'arrowStyle' | 'numberBadge' | 'smoothBrush'>
 
 export interface MarkViewOptions {
   selected: boolean
   label: number
   handleR: number
   onEndpointDown?: (event: PointerEvent<SVGCircleElement>, end: 'p1' | 'p2') => void
+  onCurveDown?: (event: PointerEvent<SVGCircleElement>) => void
 }
 
 export interface MarkTool<K extends MarkKind> {
@@ -39,9 +40,11 @@ export interface ContentCreationStyle {
   textSize?: number
   text?: string
   background?: boolean
+  textStyle?: AnnotationStyle['text']
 }
 
 export interface ContentViewOptions {
+  editing?: boolean
   selected: boolean
   scale: number
   magnifierSource: string

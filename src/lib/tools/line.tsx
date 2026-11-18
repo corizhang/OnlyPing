@@ -1,4 +1,3 @@
-import { ARROW_DEFAULT_WIDTH } from '@/types'
 import { distanceToSegment } from './geometry'
 import type { MarkTool } from './types'
 
@@ -18,6 +17,6 @@ export const lineTool: MarkTool<'line'> = {
     ctx.restore()
   },
   view: (a) => (
-    <line x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} stroke={a.color} strokeWidth={a.width ?? ARROW_DEFAULT_WIDTH} strokeLinecap="round" />
+    <line x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} stroke={a.color} strokeWidth={a.width ?? 4} strokeLinecap="round" />
   ),
 }
