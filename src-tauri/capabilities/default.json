@@ -34,11 +34,18 @@
     "allow-image-export-file-location",
     "allow-image-export-open-location",
     "core:default",
-    "core:window:allow-destroy",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",
     "fs:allow-read-file",
-    "fs:allow-write-file"
+    "fs:allow-write-file",
+    "allow-desktop-preferences",
+    "allow-desktop-save-preferences",
+    "allow-desktop-close-action",
+    "allow-app-update-info",
+    "allow-app-update-check",
+    "allow-app-update-download",
+    "allow-app-update-cancel",
+    "allow-app-update-install"
   ]
 }

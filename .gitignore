@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Updater signing private keys must stay outside the repository.
+*.key
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

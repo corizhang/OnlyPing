@@ -19,7 +19,7 @@ for (const key of startup) {
   bytes += buffer.length
   gzip += gzipSync(buffer).length
 }
-for (const name of ['export-word', 'export-document', 'export-layout', 'jspdf.es.min', 'jszip.min', 'AIPanel', 'ai']) {
+for (const name of ['export-word', 'export-document', 'export-layout', 'jspdf.es.min', 'jszip.min', 'AIPanel', 'ai', 'AppSettings', 'DesktopCloseChoice', 'desktop-events', 'desktop-updates', 'desktop-leave']) {
   const chunk = Object.entries(manifest).find(([, item]) => item.name === name)
   assert.ok(chunk, `Expected deferred engine missing: ${name}`)
   assert.ok(!startup.has(chunk[0]), `Heavy engine loaded at startup: ${name}`)

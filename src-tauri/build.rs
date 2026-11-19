@@ -1,6 +1,14 @@
 fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "app_update_info",
+            "app_update_check",
+            "app_update_download",
+            "app_update_cancel",
+            "app_update_install",
+            "desktop_preferences",
+            "desktop_save_preferences",
+            "desktop_close_action",
             "read_ai_key",
             "write_ai_key",
             "project_storage_ready",

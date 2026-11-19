@@ -1,0 +1,70 @@
+name: Build signed desktop release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag matching the application, for example v0.1.3'
+        required: true
+        type: string
+      notes:
+        description: Release notes shown in the app
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: signed-release
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-latest
+    environment: release
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      ONLYPING_UPDATER_PUBLIC_KEY: ${{ vars.ONLYPING_UPDATER_PUBLIC_KEY }}
+      RELEASE_NOTES: ${{ inputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check signing configuration
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Configure TAURI_SIGNING_PRIVATE_KEY in the release environment first' }
+          node scripts/update-release.mjs prepare
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - run: npm run desktop:build -- --config src-tauri/target/update-release.config.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - run: npm run check:bundle
+      - name: Generate version-bound update manifest
+        run: node scripts/update-release.mjs manifest
+      - name: Upload reviewable artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnlyPing-signed-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/OnlyPing_*_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/OnlyPing_*_x64-setup.exe.sig
+            src-tauri/target/latest.json
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'release-notes.txt'), $env:RELEASE_NOTES, [System.Text.UTF8Encoding]::new($false))
+          gh release create $env:RELEASE_TAG --verify-tag --draft --title "OnlyPing $env:RELEASE_TAG" --notes-file (Join-Path $env:RUNNER_TEMP 'release-notes.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Draft already exists or release creation failed; review it before retrying' }
+          gh release upload $env:RELEASE_TAG src-tauri/target/release/bundle/nsis/*-setup.exe src-tauri/target/release/bundle/nsis/*-setup.exe.sig src-tauri/target/latest.json
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed; leave the draft unpublished' }

@@ -1,41 +1,32 @@
+import { useEffect, useState } from 'react'
 import { useAITask } from '@/hooks/use-ai-task'
 import { runAIBatch } from '@/lib/ai-batch'
-import { useState } from 'react'
 import { Box, CheckCircle2, CircleAlert, FileText, Hash, Info, RotateCcw, ShieldCheck, Settings, Sparkles, WandSparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import type { AIConfig, Annotation, Page } from '@/types'
 import { uid, computeNumberStarts } from '@/types'
-import { aiAnnotateFromDescription, aiGenerateDescription, aiSuggestMosaics, aiSuggestNumbers, saveAIConfig } from '@/lib/ai'
+import { aiAnnotateFromDescription, aiGenerateDescription, aiSuggestMosaics, aiSuggestNumbers } from '@/lib/ai'
 import { preparePageForAI } from '@/lib/render'
-import { isDesktop } from '@/lib/files'
 
 interface Props {
   projectId: string
   config: AIConfig & { demo: boolean }
-  onConfigChange: (cfg: AIConfig & { demo: boolean }) => void
+  onBusyChange: (value: boolean) => void
+  onOpenSettings: () => void
+  privacy: boolean
+  onPrivacyChange: (value: boolean) => void
   pages: Page[]
   selectedPageId: string | null
   onUpdatePage: (id: string, patch: Partial<Page>, expected: Page) => void
 }
 
-export default function AIPanel({ projectId, config, onConfigChange, pages, selectedPageId, onUpdatePage }: Props) {
+export default function AIPanel({ projectId, config, onBusyChange, onOpenSettings, privacy, onPrivacyChange, pages, selectedPageId, onUpdatePage }: Props) {
   const { busy, status, setStatus, run, cancel } = useAITask(projectId)
-  const [draft, setDraft] = useState(config)
-  const [savingConfig, setSavingConfig] = useState(false)
-  const [privacy, setPrivacy] = useState(() => localStorage.getItem('mbz-privacy') !== '0')
+
+  useEffect(() => { onBusyChange(!!busy); return () => onBusyChange(false) }, [busy, onBusyChange])
 
   const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null
 
@@ -195,75 +186,7 @@ export default function AIPanel({ projectId, config, onConfigChange, pages, sele
           </Badge>
         </div>
         {busy && <Button size="sm" variant="outline" aria-label="取消 AI 任务" onClick={cancel}>取消</Button>}
-        <Dialog onOpenChange={open => { if (open) setDraft(config) }}>
-          <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" title="API 配置">
-              <Settings className="h-4 w-4" />
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>AI 接口配置</DialogTitle>
-              <DialogDescription>
-                支持任意 OpenAI 兼容的多模态接口（如 Moonshot/Kimi）。未配置时使用演示模式，生成示例内容。
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <Label>接口地址</Label>
-                <Input
-                  value={draft.baseUrl}
-                  onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
-                  placeholder="https://api.moonshot.cn/v1"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>API Key</Label>
-                <Input
-                  type="password"
-                  value={draft.apiKey}
-                  onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
-                  placeholder="sk-..."
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>视觉模型</Label>
-                <Input
-                  value={draft.model}
-                  onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                  placeholder="moonshot-v1-8k-vision-preview"
-                />
-              </div>
-              <label className="flex items-center justify-between gap-3 text-sm">
-                <span>在此设备记住 API Key</span>
-                <Switch checked={draft.keyStorage === 'local'} onCheckedChange={checked => setDraft({ ...draft, keyStorage: checked ? 'local' : 'session' })} />
-              </label>
-              <p className="text-xs text-muted-foreground">{isDesktop() ? '开启后保存在 Windows 凭据管理器中；关闭时仅在本次应用运行期间保留，重启后需重新填写。清空 Key 并保存可移除已记住的密钥。' : '关闭时仅保留在当前标签页会话中，刷新可继续使用，关闭标签页后需重新填写。浏览器的会话恢复可能恢复会话数据；设备记住模式会以明文保存在本机浏览器中。'}</p>
-              <Button
-                className="w-full"
-                disabled={savingConfig}
-                onClick={async () => {
-                  cancel()
-                  const next = { ...draft, demo: !draft.apiKey }
-                  setSavingConfig(true)
-                  try {
-                    await saveAIConfig(next)
-                    onConfigChange(next)
-                    setStatus({ kind: 'ok', text: '配置已保存' })
-                  } catch { setStatus({ kind: 'err', text: '配置保存失败，请检查本机存储后重试；未启用新配置，也未改用明文保存' }) }
-                  finally { setSavingConfig(false) }
-                }}
-              >
-                {savingConfig ? '正在保存…' : '保存配置'}
-              </Button>
-              {config.demo && (
-                <p className="text-xs text-amber-600">
-                  当前为演示模式：AI 功能生成示例内容。填写 API Key 后转为真实生成。
-                </p>
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
+        <Button variant="ghost" size="icon" title="AI 设置" aria-label="AI 设置" onClick={onOpenSettings}><Settings className="size-4" /></Button>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
@@ -293,10 +216,7 @@ export default function AIPanel({ projectId, config, onConfigChange, pages, sele
           <Switch
             aria-label="隐私模式"
             checked={privacy}
-            onCheckedChange={(checked) => {
-              setPrivacy(checked)
-              localStorage.setItem('mbz-privacy', checked ? '1' : '0')
-            }}
+            onCheckedChange={onPrivacyChange}
           />
         </div>
 

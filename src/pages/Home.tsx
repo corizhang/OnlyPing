@@ -1,3 +1,6 @@
+import AsyncAppSettings from '@/components/AsyncAppSettings'
+import type { CloseChoice } from '@/lib/desktop-lifecycle'
+import type { SettingsSection } from '@/components/AppSettings'
 import { useExportTask } from '@/hooks/use-export-task'
 import { checkTask, isTaskCancelled, taskCheckpoint, type RenderTask } from '@/lib/render-task'
 import AnnotationList from '@/components/AnnotationList'
@@ -13,8 +16,9 @@ import ToolIcon from '@/components/ToolIcon'
 import { TOOL_SHORTCUTS, DEFAULT_TOOL_ORDER } from '@/lib/tools'
 import { EditHistory } from '@/lib/history'
 import PanelResizeHandle from '@/components/PanelResizeHandle'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Settings2,
   PanelRight,
   Keyboard,
   Copy,
@@ -100,6 +104,8 @@ import { imageExportWarnings, planImageExport, type ImageExportOptions, type Ima
 import { clearImageCache, loadImage, preparePageForAI } from '@/lib/render'
 import type { Annotation, AnnotationStyle, ExportFooter, ExportStyle, Page, Rect, StylePreset, TextAlignment, Tool } from '@/types'
 import { computeNumberStarts, DEFAULT_EXPORT_FOOTER, DEFAULT_EXPORT_STYLE, MOSAIC_MAX_TILE, MOSAIC_MIN_TILE, uid } from '@/types'
+
+const DesktopCloseChoice = lazy(() => import('@/components/DesktopCloseChoice'))
 
 const COLORS = ['#ef4444', '#f59e0b', '#facc15', '#10b981', '#2563eb', '#7c3aed', '#111827']
 
@@ -195,6 +201,24 @@ export default function Home() {
   const resizingStepList = useRef(false)
   useEffect(() => { localStorage.setItem('mbz-step-list-height', JSON.stringify(stepListHeight)) }, [stepListHeight])
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
+  const [closeChoice, setCloseChoice] = useState<{ available: boolean; resolve: (choice: CloseChoice | null) => void } | null>(null)
+  const closeChoiceRef = useRef(closeChoice)
+  useEffect(() => { closeChoiceRef.current = closeChoice }, [closeChoice])
+  useEffect(() => () => closeChoiceRef.current?.resolve(null), [])
+  const [aiPanelBusy, setAiPanelBusy] = useState(false)
+  const [privacy, setPrivacy] = useState(() => localStorage.getItem('mbz-privacy') !== '0')
+  const changePrivacy = (value: boolean) => {
+    try { localStorage.setItem('mbz-privacy', value ? '1' : '0'); setPrivacy(value) }
+    catch { toast.error('隐私偏好保存失败，当前设置保持不变') }
+  }
+  useEffect(() => {
+    const openSettings = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === ',' && !event.altKey && !isComposingKey(event)) { event.preventDefault(); setSettingsSection('general') }
+    }
+    window.addEventListener('keydown', openSettings, true)
+    return () => window.removeEventListener('keydown', openSettings, true)
+  }, [])
   const viewportRef = useRef<HTMLDivElement>(null)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
@@ -415,7 +439,7 @@ export default function Home() {
   // AI 隐私扫描核心：逐页识别疑似未打码的隐私内容（已有打码覆盖 ≥50% 的自动跳过）
   const collectAiPrivacyIssues = async (task: RenderTask = {}): Promise<CheckIssue[]> => {
     const found: CheckIssue[] = []
-    const privacyMode = localStorage.getItem('mbz-privacy') === '1'
+    const privacyMode = privacy
     for (let i = 0; i < pages.length; i++) {
       await taskCheckpoint(task, '正在检查隐私', i, pages.length)
       const p = pages[i]
@@ -596,18 +620,24 @@ export default function Home() {
     try { setLocalProjects(await listLocalProjects()); setLibraryOpen(true) }
     catch { toast.error('本地项目列表读取失败，请重试') }
   }
-  useDesktopClose(async () => {
-    if (exporting || hasActiveFileOperation()) { toast.info('请先完成文件操作或配置保存，再关闭窗口'); return false }
-    const persisted = storageReady && await persistCurrent()
-    const current = { schemaVersion: 1 as const, projectId: projectIdRef.current, ...snapshot() }
-    if (persisted) { await projectFiles.refreshDisk(current.projectId); await projectFiles.check(current.projectId, current) }
-    if (persisted && !projectFiles.dirty(current.projectId, current)) return true
-    const uncertainFile = ['external', 'unavailable'].includes(projectFiles.status(current.projectId, current))
-    const { confirm } = await import('@tauri-apps/plugin-dialog')
-    return confirm(persisted ? uncertainFile ? '项目文件已在外部修改或无法读取，当前工作区已保存在本机恢复存档。可返回核对版本或另存为副本。仍然关闭？' : '当前修改已自动保存到本机，但关联的 JSON 文件尚未更新。可返回按 Ctrl+S 保存文件，或关闭后从本地项目恢复。仍然关闭？' : '本地保存未完成。建议留在编辑器下载项目备份，直接关闭可能丢失未保存修改。仍然关闭？', {
-      title: 'OnlyPing · 未保存内容', kind: 'warning', okLabel: '仍然关闭', cancelLabel: '留在编辑器',
-    })
-  }, () => toast.error('关闭前保存失败，请先备份项目后重试'))
+  const beforeDesktopExit = async (update = false) => (await import('@/lib/desktop-leave')).prepareDesktopLeave({
+    update, busy: exporting || hasActiveFileOperation() || projectFileTask.current || (update && (aiPanelBusy || aiScanning)), ready: storageReady,
+    persist: persistCurrent,
+    file: async () => {
+      const current = { schemaVersion: 1 as const, projectId: projectIdRef.current, ...snapshot() }
+      await projectFiles.refreshDisk(current.projectId); await projectFiles.check(current.projectId, current)
+      return { dirty: projectFiles.dirty(current.projectId, current), uncertain: ['external', 'unavailable'].includes(projectFiles.status(current.projectId, current)) }
+    }, warn: message => toast.info(message),
+  })
+  useDesktopClose(() => beforeDesktopExit(), () => toast.error('窗口操作或关闭前保存失败，请保留窗口并重试'), {
+    beforeHide: async () => {
+      if (exporting || hasActiveFileOperation()) { toast.info('请先完成文件操作再隐藏窗口'); return false }
+      return storageReady && await persistCurrent()
+    },
+    choose: available => new Promise(resolve => setCloseChoice({ available, resolve })),
+    beforeUpdate: () => beforeDesktopExit(true),
+    settings: updates => setSettingsSection(updates ? 'about' : 'general'),
+  })
   const restoreLocal = async (entry: LocalProjectEntry) => {
     if (!await persistCurrent()) return
     try {
@@ -623,7 +653,7 @@ export default function Home() {
   // Ctrl+Z / Ctrl+Y 撤销重做
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isComposingKey(e)) return
+      if (settingsSection || closeChoice || isComposingKey(e)) return
       const target = e.target as HTMLElement | null
       const editing = !!target && (
         ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) ||
@@ -657,6 +687,7 @@ export default function Home() {
   // Ctrl+V 粘贴截图导入（导入时已去除 EXIF 元数据）
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
+      if (settingsSection || closeChoice) return
       if (!e.clipboardData?.files?.length) return
       e.preventDefault()
       void importFiles(e.clipboardData.files)
@@ -996,7 +1027,7 @@ export default function Home() {
     if (!isDesktop()) { projectFileRef.current?.click(); return }
     await runProjectFileOperation(async () => { const source = await projectFiles.open(); if (source) await loadProject(source.file, source) })
   }
-  useProjectFileShortcuts(saveProjectFile, chooseProject)
+  useProjectFileShortcuts(saveProjectFile, chooseProject, !settingsSection && !closeChoice)
   const changeProjectDirectory = async () => {
     await runProjectFileOperation(async () => {
       const path = await (await import('@tauri-apps/plugin-dialog')).open({ title: '设置新项目默认保存目录', directory: true, multiple: false, recursive: false })
@@ -1130,7 +1161,13 @@ export default function Home() {
       onBlurCapture={() => history.current.end()}
     >
       <Toaster richColors position="bottom-right" />
-      {homeOpen && <ProjectStart info={workspaceInfo} recoveries={localProjects} search={workspaceSearch} onSearchChange={setWorkspaceSearch} onLibraryChange={updateProjectLibrary} onDraft={entry => void restoreLocal(entry)} loading={workspaceLoading} error={workspaceError} busy={projectFileBusy || exporting || storageLoading} onNew={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }} onOpen={() => void chooseProject()} onDirectory={() => void changeProjectDirectory()} onRecent={entry => void openRecentProject(entry)} onRecovery={() => void openLocalProjects()} onContinue={() => setHomeOpen(false)} onRetry={() => setWorkspaceAttempt(value => value + 1)} />}
+      {closeChoice && <Suspense fallback={null}><DesktopCloseChoice available={closeChoice.available} onChoice={choice => { closeChoice.resolve(choice); setCloseChoice(null) }} /></Suspense>}
+      {settingsSection && <AsyncAppSettings key={settingsSection} initialSection={settingsSection} onClose={() => setSettingsSection(null)} onDirectory={changeProjectDirectory} onLibrary={() => void openLocalProjects()}
+        onResetLayout={() => { setRightWidth(288); setStepListHeight(42); setRightOpen(true) }} onResetTools={() => setToolOrder([...DEFAULT_TOOL_ORDER])} onResetStyles={() => setToolStyles(restoreToolStyles(null))}
+        onReorder={() => { setHomeOpen(false); setReorderingTools(true) }} onShortcuts={() => setShortcutsOpen(true)} config={aiConfig} onConfigChange={setAIConfig} aiReady={aiConfigReady}
+        privacy={privacy} onPrivacyChange={changePrivacy} autoScan={autoAiScan} onAutoScanChange={setAutoAiScan} aiBusy={aiPanelBusy || aiScanning} />}
+
+      {homeOpen && <ProjectStart onSettings={() => setSettingsSection('general')} info={workspaceInfo} recoveries={localProjects} search={workspaceSearch} onSearchChange={setWorkspaceSearch} onLibraryChange={updateProjectLibrary} onDraft={entry => void restoreLocal(entry)} loading={workspaceLoading} error={workspaceError} busy={projectFileBusy || exporting || storageLoading} onNew={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }} onOpen={() => void chooseProject()} onDirectory={() => void changeProjectDirectory()} onRecent={entry => void openRecentProject(entry)} onRecovery={() => void openLocalProjects()} onContinue={() => setHomeOpen(false)} onRetry={() => setWorkspaceAttempt(value => value + 1)} />}
       {projectVersions && <ProjectVersionChoice versions={projectVersions} busy={projectFileBusy} onChoose={choice => void chooseProjectVersion(choice)} onClose={() => setProjectVersions(null)} onLocate={() => void locateProjectFile()} />}
       <div className="contents" inert={homeOpen}>
       {imageExportOpen && <ImageExportDialog pages={pages} currentId={selectedPageId} busy={exporting} onClose={() => { if (exporting) exportTask.cancel(); setImageExportOpen(false) }} onExport={(selection, options) => void doImageExport(selection, options)} />}
@@ -1154,6 +1191,7 @@ export default function Home() {
           />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          <Button variant="ghost" size="icon-sm" aria-label="设置" title="设置（Ctrl+,）" onClick={() => setSettingsSection('general')}><Settings2 className="size-4" /></Button>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -1773,7 +1811,7 @@ export default function Home() {
           key={projectId}
           projectId={projectId}
           config={aiConfig}
-          onConfigChange={setAIConfig}
+          onBusyChange={setAiPanelBusy} onOpenSettings={() => setSettingsSection('ai')} privacy={privacy} onPrivacyChange={changePrivacy}
           pages={pages}
           selectedPageId={selectedPageId}
           onUpdatePage={(id, patch, expected) => {

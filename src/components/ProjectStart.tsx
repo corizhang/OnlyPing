@@ -6,7 +6,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import type { LocalProjectEntry } from '@/lib/db'
 import { projectStartItems, type StartItem } from '@/lib/project-start-items'
 
-export default function ProjectStart({ info, recoveries = [], loading, error, onNew, onOpen, onDirectory, onRecent, onDraft, onRecovery, onContinue, onRetry, busy, search = '', onSearchChange, onLibraryChange }: {
+export default function ProjectStart({ info, recoveries = [], loading, error, onNew, onOpen, onDirectory, onRecent, onDraft, onRecovery, onContinue, onRetry, busy, search = '', onSearchChange, onLibraryChange, onSettings }: {
+  onSettings: () => void
   info: WorkspaceInfo | null; loading: boolean; error: string; busy: boolean
   search?: string; onSearchChange?: (value: string) => void
   onLibraryChange?: (action: LibraryAction, id?: string) => Promise<void>
@@ -38,6 +39,7 @@ export default function ProjectStart({ info, recoveries = [], loading, error, on
         <Button disabled={locked} onClick={onNew}><FilePlus2 className="mr-2 size-4" />新建项目</Button>
         <Button variant="outline" disabled={locked} onClick={onOpen}><FolderOpen className="mr-2 size-4" />打开项目文件</Button>
         <Button variant="ghost" disabled={locked} onClick={onRecovery}>本机恢复存档与历史</Button>
+        <Button variant="ghost" onClick={onSettings}><Settings2 className="size-4" />设置</Button>
       </div>
       <div className="mb-8 flex items-center gap-3 rounded border border-white/10 bg-[#2c2c2c] px-4 py-3">
         <Settings2 className="size-4 shrink-0 text-[#aaa]" /><div className="min-w-0 flex-1"><p className="text-xs text-[#aaa]">新项目默认保存目录</p><p className="mt-1 break-all text-sm">{info?.directory ?? '正在读取项目目录…'}</p></div>
