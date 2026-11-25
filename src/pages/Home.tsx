@@ -35,7 +35,6 @@ import {
   Redo2,
   Palette,
   Trash2,
-  ListChecks,
   ShieldAlert,
   CircleAlert,
   Info,
@@ -60,7 +59,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -1147,6 +1145,10 @@ export default function Home() {
         : issues.length
           ? { cls: 'bg-blue-400', title: '仅提示项，无警告' }
           : { cls: 'bg-emerald-500', title: '检查通过' }
+  const saveStatusFailed = (autosave.status || saveNote).includes('失败') || fileStatus === 'external' || fileStatus === 'unavailable'
+  const saveStatusBusy = (autosave.status || '').includes('正在') || fileStatus === 'checking'
+  const saveStatusLabel = saveStatusFailed ? '需处理' : saveStatusBusy ? '保存中' : fileStatus === 'dirty' ? '待写入文件' : isDesktop() && fileBinding ? '已同步' : isDesktop() ? '已存本机' : '已保存'
+  const saveStatusTone = saveStatusFailed ? 'bg-amber-400' : saveStatusBusy ? 'bg-sky-400' : fileStatus === 'dirty' ? 'bg-amber-400' : 'bg-emerald-400'
 
   return (
     <div className="ps-workspace flex h-screen min-w-[960px] flex-col overflow-hidden bg-background text-foreground"
@@ -1165,6 +1167,8 @@ export default function Home() {
       {settingsSection && <AsyncAppSettings key={settingsSection} initialSection={settingsSection} onClose={() => setSettingsSection(null)} onDirectory={changeProjectDirectory} onLibrary={() => void openLocalProjects()}
         onResetLayout={() => { setRightWidth(288); setStepListHeight(42); setRightOpen(true) }} onResetTools={() => setToolOrder([...DEFAULT_TOOL_ORDER])} onResetStyles={() => setToolStyles(restoreToolStyles(null))}
         onReorder={() => { setHomeOpen(false); setReorderingTools(true) }} onShortcuts={() => setShortcutsOpen(true)} config={aiConfig} onConfigChange={setAIConfig} aiReady={aiConfigReady}
+        exportStyle={exportStyle} exportFooter={exportFooter} onExportStyleChange={value => setExportStyle(value)} onExportFooterChange={value => setExportFooter(() => value)}
+        onDocumentPreview={pages.length ? () => setPreviewOpen(true) : undefined}
         privacy={privacy} onPrivacyChange={changePrivacy} autoScan={autoAiScan} onAutoScanChange={setAutoAiScan} aiBusy={aiPanelBusy || aiScanning} />}
 
       {homeOpen && <ProjectStart onSettings={() => setSettingsSection('general')} info={workspaceInfo} recoveries={localProjects} search={workspaceSearch} onSearchChange={setWorkspaceSearch} onLibraryChange={updateProjectLibrary} onDraft={entry => void restoreLocal(entry)} loading={workspaceLoading} error={workspaceError} busy={projectFileBusy || exporting || storageLoading} onNew={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }} onOpen={() => void chooseProject()} onDirectory={() => void changeProjectDirectory()} onRecent={entry => void openRecentProject(entry)} onRecovery={() => void openLocalProjects()} onContinue={() => setHomeOpen(false)} onRetry={() => setWorkspaceAttempt(value => value + 1)} />}
@@ -1189,13 +1193,17 @@ export default function Home() {
             aria-label="项目标题"
             className="h-8 w-52 border-transparent bg-transparent px-2 text-sm font-medium shadow-none hover:border-white/20 focus-visible:bg-[#353535]"
           />
+          <button type="button" onClick={() => setRecoveryOpen(true)} title={`${autosave.status || saveNote || '正在准备本机保存状态'}${isDesktop() ? `；${fileBinding ? `${projectFilename(fileBinding.path)} · ${fileStatusText}` : fileStatusText}` : ''}`} aria-label="查看项目保存状态" className="ml-1 flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-white/5">
+            <span className={`size-2 rounded-full ${saveStatusTone}`} />
+            <span>{saveStatusLabel}</span>
+          </button>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <Button variant="ghost" size="icon-sm" aria-label="设置" title="设置（Ctrl+,）" onClick={() => setSettingsSection('general')}><Settings2 className="size-4" /></Button>
+          <Separator orientation="vertical" className="mx-1 h-6" />
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground"
+            className="h-9 w-9 text-muted-foreground"
             title="撤销（Ctrl+Z）"
             aria-label="撤销"
             disabled={!history.current.canUndo}
@@ -1206,7 +1214,7 @@ export default function Home() {
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground"
+            className="h-9 w-9 text-muted-foreground"
             title="重做（Ctrl+Y）"
             aria-label="重做"
             disabled={!history.current.canRedo}
@@ -1214,16 +1222,12 @@ export default function Home() {
           >
             <Redo2 className="h-4 w-4" />
           </Button>
-          {(autosave.status || saveNote) && (
-            <span className={`mr-1 inline-flex max-w-48 truncate items-center gap-1.5 px-2 py-1 text-[11px] font-medium ${(autosave.status || saveNote).includes('失败') ? 'text-amber-700' : 'text-emerald-700'}`}>
-              <span className={`size-1.5 rounded-full ${(autosave.status || saveNote).includes('失败') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-              <button type="button" onClick={() => setRecoveryOpen(true)} title={autosave.status || saveNote} className="truncate">{autosave.status || saveNote}</button>
-            </span>
-          )}
-          {isDesktop() && <><Button size="sm" variant="ghost" disabled={projectFileBusy || exporting} onClick={async () => { if (await persistCurrent()) setHomeOpen(true) }}>项目首页</Button><span className="max-w-64 truncate text-[11px] text-muted-foreground" title={fileBinding ? `${fileBinding.path}；${fileStatusText}。文件关联会在本机保留。` : '本机自动存档独立保留；Ctrl+S 直接保存到默认项目目录'}>{fileBinding ? `${fileStatus === 'dirty' ? '● ' : ''}${projectFilename(fileBinding.path)} · ${fileStatusText}` : '尚未保存项目文件'}</span></>}
+          <Separator orientation="vertical" className="mx-1 h-6" />
           <DropdownMenu onOpenChange={open => { if (open) void listLocalProjects().then(setLocalProjects).catch(() => setLocalProjects([])) }}>
-            <DropdownMenuTrigger asChild><Button variant="outline" size="sm"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger>
+            <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="h-9 bg-background"><FolderOpen className="size-4" />项目</Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {isDesktop() && <DropdownMenuItem disabled={projectFileBusy || exporting} onClick={async () => { if (await persistCurrent()) setHomeOpen(true) }}><BookOpen className="mr-2 size-4" />项目首页</DropdownMenuItem>}
+              {isDesktop() && <DropdownMenuSeparator />}
               <DropdownMenuItem disabled={projectFileBusy} onClick={() => { setNewProjectName('未命名明白纸'); setNewProjectOpen(true) }}><FilePlus2 className="mr-2 size-4" />新建项目</DropdownMenuItem>
               <DropdownMenuItem disabled={projectFileBusy} onClick={() => void chooseProject()}><FolderOpen className="mr-2 size-4" />打开项目文件… <span className="ml-auto pl-3 text-xs text-muted-foreground">Ctrl+O</span></DropdownMenuItem>
               <DropdownMenuItem disabled={projectFileBusy} onClick={() => void saveProjectFile()}><Save className="mr-2 size-4" />{isDesktop() ? '保存项目文件' : '下载项目 JSON'} <span className="ml-auto pl-3 text-xs text-muted-foreground">Ctrl+S</span></DropdownMenuItem>
@@ -1246,121 +1250,24 @@ export default function Home() {
               e.currentTarget.value = ''
             }}
           />
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" size="sm" className="h-9 bg-background">
-                <Type className="size-4" />
-                导出样式
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-9 bg-background" disabled={!pages.length}>
+                检查与预览
+                {issues.length > 0 && <span className="ml-1 rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-300">{issues.length}</span>}
               </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-80" align="end">
-              <div className="space-y-3">
-                <div className="text-xs font-medium text-slate-600">导出版式</div>
-                {(
-                  [
-                    { key: 'title', alignKey: 'titleAlign', label: '主标题' },
-                    { key: 'heading', alignKey: 'headingAlign', label: '步骤标题' },
-                    { key: 'notes', alignKey: 'notesAlign', label: '说明文字' },
-                  ] as const
-                ).map(({ key, alignKey, label }) => (
-                  <div key={key} className="flex items-center gap-2 text-xs text-slate-500">
-                    <span className="w-14 shrink-0">{label}</span>
-                    <Slider
-                      min={key === 'notes' ? 12 : 16}
-                      max={key === 'notes' ? 32 : 56}
-                      value={[exportStyle[key]]}
-                      onValueChange={([value]) => setExportStyle((s) => ({ ...s, [key]: value }))}
-                      className="mx-1 flex-1"
-                      aria-label={`${label}字号`}
-                    />
-                    <span className="w-6 text-right tabular-nums">{exportStyle[key]}</span>
-                    <Select
-                      value={exportStyle[alignKey] ?? 'left'}
-                      onValueChange={(value) => setExportStyle((s) => ({ ...s, [alignKey]: value as TextAlignment }))}
-                    >
-                      <SelectTrigger size="sm" className="h-7 w-[76px] px-2 text-xs" aria-label={`${label}对齐方式`}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="left">靠左</SelectItem>
-                        <SelectItem value="center">居中</SelectItem>
-                        <SelectItem value="right">靠右</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ))}
-                <div className="border-t pt-3">
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
-                    步骤图片宽度
-                    <Slider
-                      min={25}
-                      max={100}
-                      step={5}
-                      value={[exportStyle.stepImageScale ?? 100]}
-                      onValueChange={([stepImageScale]) => setExportStyle((s) => ({ ...s, stepImageScale }))}
-                      className="mx-1 flex-1"
-                      aria-label="步骤图片宽度比例"
-                    />
-                    <span className="w-9 text-right tabular-nums">{exportStyle.stepImageScale ?? 100}%</span>
-                  </label>
-                  {selectedPage && (
-                    <div className="mt-1 text-[10px] text-muted-foreground">
-                      单页 PNG 保持原尺寸：{selectedPage.width} × {selectedPage.height} px
-                    </div>
-                  )}
-                  <div className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                    只调整长图、Word 和 PDF 中每一步截图的显示宽度；标题、说明、页面画布及单页 PNG 保持原尺寸。
-                  </div>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-full text-xs"
-                  onClick={() => setExportStyle(DEFAULT_EXPORT_STYLE)}
-                >
-                  恢复默认样式
-                </Button>
-                <div className="border-t pt-3">
-                  <div className="mb-2 text-xs font-medium text-slate-600">页脚信息（随导出显示）</div>
-                  <Input
-                    value={exportFooter.org}
-                    onChange={(e) => setExportFooter((f) => ({ ...f, org: e.target.value }))}
-                    placeholder="编制单位，如：XX银行零售部"
-                    className="mb-2 h-8 text-xs"
-                  />
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={exportFooter.version}
-                      onChange={(e) => setExportFooter((f) => ({ ...f, version: e.target.value }))}
-                      placeholder="版本号，如 V1.0"
-                      className="h-8 flex-1 text-xs"
-                    />
-                    <div className="flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
-                      <Checkbox
-                        id="footer-show-date"
-                        className="size-4"
-                        checked={exportFooter.showDate}
-                        onCheckedChange={(checked) => setExportFooter((f) => ({ ...f, showDate: checked === true }))}
-                      />
-                      <Label htmlFor="footer-show-date" className="cursor-pointer font-normal">显示日期</Label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Button variant="outline" size="sm" className="h-9 bg-background" disabled={!pages.length} onClick={runChecks}>
-            <span
-              className={`mr-1.5 h-2 w-2 rounded-full ${health.cls}`}
-              title={health.title}
-            />
-            <ListChecks className="size-4" />
-            一致性检查{issues.length ? `（${issues.length}）` : ''}
-          </Button>
-          <Button variant="outline" size="sm" className="h-9 bg-background" disabled={exporting || !pages.length} onClick={() => setPreviewOpen(true)}>
-            <Eye className="size-4" />
-            预览导出
-          </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={runChecks}>
+                <span className={`mr-2 size-2 rounded-full ${health.cls}`} title={health.title} />
+                一致性检查{issues.length ? `（${issues.length}）` : ''}
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={exporting} onClick={() => setPreviewOpen(true)}>
+                <Eye className="mr-2 size-4" />
+                预览导出
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {exporting && <div className="flex items-center gap-2 text-xs" role="status"><span className="max-w-44 truncate" title={exportTask.progress?.phase}>{exportTask.progress ? `${exportTask.progress.phase} ${exportTask.progress.completed}/${exportTask.progress.total}` : '正在准备…'}</span><Button size="sm" variant="outline" onClick={exportTask.cancel}>取消导出</Button></div>}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1584,7 +1491,10 @@ export default function Home() {
               <Button variant="ghost" size="icon-sm" className="size-8 rounded-lg text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" aria-label="删除标注" title="删除标注" onClick={() => { updatePage(selectedPage.id, { annotations: selectedPage.annotations.filter(a => a.id !== selectedAnn.id) }); setSelectedAnnId(null) }}><Trash2 className="size-4" /></Button>
             </div>}
           </div>
-        <Button variant="ghost" size="sm" className="mx-2 shrink-0 text-xs text-[#bcbcbc]" onClick={() => setShortcutsOpen(true)}><Keyboard className="size-4" />快捷键</Button>
+        <div className="ml-auto flex h-full shrink-0 items-center gap-1 border-l border-white/10 px-2">
+          <Button variant="ghost" size="icon-sm" className="size-8 text-[#bcbcbc]" aria-label="设置" title="设置（Ctrl+,）" onClick={() => setSettingsSection('general')}><Settings2 className="size-4" />设置</Button>
+          <Button variant="ghost" size="sm" className="shrink-0 text-xs text-[#bcbcbc]" onClick={() => setShortcutsOpen(true)}><Keyboard className="size-4" />快捷键</Button>
+        </div>
         <Button variant="ghost" size="icon-sm" className="mr-2 shrink-0 text-[#bcbcbc]" aria-label="切换右侧面板" aria-pressed={rightOpen} onClick={() => setRightOpen(v => !v)}><PanelRight className="size-4" /></Button>
       </div>
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -1837,6 +1747,8 @@ export default function Home() {
         footer={exportFooter}
         open={previewOpen}
         onOpenChange={setPreviewOpen}
+        onStyleChange={setExportStyle}
+        onFooterChange={value => setExportFooter(() => value)}
       />
       <Dialog open={checkOpen} onOpenChange={setCheckOpen}>
         <DialogContent className="max-h-[80vh] overflow-auto sm:max-w-lg">

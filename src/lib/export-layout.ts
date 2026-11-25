@@ -5,6 +5,7 @@ import { RenderQueue, checkTask, taskCheckpoint, releaseCanvas, canvasBlob, type
 import { renderPageToCanvas } from './render'
 import { safeNotesHtml } from './notes'
 import { footerText } from './export-common'
+import { createDocumentHeader, createStepHeading, documentRows } from './document-layout'
 const documentQueue = new RenderQueue()
 const FONT = '"PingFang SC", "Microsoft YaHei", sans-serif'
 
@@ -66,7 +67,8 @@ async function renderDocumentJob(title: string, pages: Page[], style: ExportStyl
     // Fit on a fresh page. Explicit dimensions preserve the screenshot's aspect
     // ratio; max-height with a percentage width can leave an oversized layout box.
     if (format === 'pdf' && root.getBoundingClientRect().height > maxHeight) {
-      const img = block.querySelector('img')
+      // A complete row must retain its column widths and aligned image tops.
+      const img = block.dataset.singleImage === 'true' ? block.lastElementChild?.querySelector('img') : null
       const rect = img?.getBoundingClientRect()
       const available = Math.floor(maxHeight - root.getBoundingClientRect().height + (rect?.height ?? 0)) - 1
       if (img && available >= 180) {
@@ -94,20 +96,29 @@ async function renderDocumentJob(title: string, pages: Page[], style: ExportStyl
   try {
     await document.fonts.ready
     checkTask(task)
-    const heading = document.createElement('h1')
-    heading.textContent = title || '明白纸'
-    heading.style.cssText = `font-size:${style.title}px;font-weight:700;text-align:${style.titleAlign};margin:0 0 20px;overflow-wrap:anywhere;`
-    root.appendChild(heading)
+    await append(await createDocumentHeader(title, style))
     const starts = computeNumberStarts(pages)
-    for (let i = 0; i < pages.length; i++) {
+    const layout = style.layout ?? 'top'
+    const columns = layout === 'three' ? 3 : layout === 'two' || layout === 'shared' ? 2 : 1
+    let i = 0
+    for (const row of documentRows(pages, layout)) {
       await taskCheckpoint(task, '正在渲染步骤', i, pages.length)
-      const page = pages[i]
       const block = document.createElement('section')
-      block.style.cssText = 'padding-top:24px;'
-      const h = document.createElement('h2')
-      h.textContent = `步骤 ${i + 1}`
-      h.style.cssText = `font-size:${style.heading}px;font-weight:700;text-align:${style.headingAlign};margin:0 0 8px;`
-      block.appendChild(h)
+      block.style.cssText = 'padding-top:24px;display:flex;flex-direction:column;gap:12px;'
+      if (layout === 'top') block.dataset.singleImage = 'true'
+      const copies = document.createElement('div')
+      copies.style.cssText = 'display:flex;gap:20px;align-items:stretch;'
+      const pictures = document.createElement('div')
+      pictures.style.cssText = 'display:flex;gap:20px;align-items:flex-start;'
+      for (let column = 0; column < row.length; column++) {
+      const page = row[column]
+      const copy = document.createElement('div')
+      copy.style.cssText = 'flex:1;min-width:0;'
+      if (columns > 1 && layout !== 'shared') copy.style.flex = `0 0 calc((100% - ${(columns - 1) * 20}px) / ${columns})`
+      if (layout !== 'shared' || column === 0) {
+        const copyWidth = layout === 'shared' ? width - padding * 2 : columns > 1 ? (width - padding * 2 - (columns - 1) * 20) / columns : layout === 'left' || layout === 'right' ? (width - padding * 2) * (style.textWidth ?? 40) / 100 : width - padding * 2
+        copy.appendChild(await createStepHeading(i + column, layout === 'shared' ? row.length : 1, page.name, style, copyWidth))
+      }
       if (page.notes) {
         const notes = document.createElement('div')
         notes.innerHTML = safeNotesHtml(page)
@@ -118,16 +129,35 @@ async function renderDocumentJob(title: string, pages: Page[], style: ExportStyl
           element.style.cssText = `list-style-type:${element.tagName === 'UL' ? 'disc' : 'decimal'};padding-left:1.5em;margin:0 0 .5em;text-align:${style.notesAlign};`
         })
         notes.querySelectorAll<HTMLElement>('li p').forEach(p => { p.style.margin = '0' })
-        block.appendChild(notes)
+        copy.appendChild(notes)
       }
+      copies.appendChild(copy)
       const canvas = await renderPageToCanvas(page, starts.get(page.id) ?? 0)
       const img = document.createElement('img')
       try { img.src = URL.createObjectURL(await canvasBlob(canvas, task)); urls.add(img.src) } finally { releaseCanvas(canvas) }
       img.style.cssText = `display:block;width:${Math.max(.25, Math.min(1, imageScale)) * 100}%;height:auto;margin:0 auto;`
       await img.decode()
       checkTask(task)
-      block.appendChild(img)
+      const imageCell = document.createElement('div')
+      imageCell.style.cssText = 'flex:1;min-width:0;'
+      if (columns > 1) imageCell.style.flex = `0 0 calc((100% - ${(columns - 1) * 20}px) / ${columns})`
+      imageCell.appendChild(img)
+      pictures.appendChild(imageCell)
+      }
+      if (layout === 'shared') {
+        copies.style.flexDirection = 'column'
+        copies.style.gap = '0'
+      }
+      if (layout === 'left' || layout === 'right') {
+        block.style.flexDirection = layout === 'left' ? 'row' : 'row-reverse'
+        const textWidth = style.textWidth ?? 40
+        copies.style.cssText += `flex:0 0 ${textWidth}%;`
+        pictures.style.cssText += 'flex:1;min-width:0;'
+      }
+      // Two independent horizontal bands: the tallest copy sets the image baseline.
+      block.append(copies, pictures)
       await append(block)
+      i += row.length
     }
     const ft = footerText(footer)
     if (ft) {

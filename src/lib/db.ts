@@ -326,6 +326,17 @@ const project = z.object({
   title: z.string().default('明白纸'),
   pages: z.array(page).refine(items => new Set(items.map(p => p.id)).size === items.length),
   exportStyle: z.object({
+    stepHeading: z.enum(['text', 'circle', 'badge']).optional(),
+    stepColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+    layout: z.enum(['top', 'left', 'right', 'two', 'three', 'shared']).optional(),
+    textWidth: finite.min(30).max(50).optional(),
+    header: z.object({
+      subtitle: z.string().max(2000), background: z.enum(['plain', 'color', 'image']),
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/), textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      image: image.max(4 * 1024 * 1024).optional(), logo: image.max(4 * 1024 * 1024).optional(),
+      logoPosition: z.enum(['left', 'right']), logoSize: finite.min(24).max(120),
+      height: finite.min(80).max(600), overlay: finite.min(0).max(0.9), imageFit: z.enum(['cover', 'contain']),
+    }).optional(),
     title: positive.max(120).default(32), heading: positive.max(120).default(22), notes: positive.max(120).default(16),
     stepImageScale: finite.min(25).max(100).optional(), imageScale: finite.min(25).max(100).optional(),
     titleAlign: align.default('left'), headingAlign: align.default('left'), notesAlign: align.default('left'),

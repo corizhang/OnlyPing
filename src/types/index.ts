@@ -174,6 +174,23 @@ export interface AIConfig {
 export type TextAlignment = 'left' | 'center' | 'right'
 
 export interface ExportStyle {
+  stepHeading?: 'text' | 'circle' | 'badge'
+  stepColor?: string
+  layout?: 'top' | 'left' | 'right' | 'two' | 'three' | 'shared'
+  textWidth?: number
+  header?: {
+    subtitle: string
+    background: 'plain' | 'color' | 'image'
+    color: string
+    textColor: string
+    image?: string
+    logo?: string
+    logoPosition: 'left' | 'right'
+    logoSize: number
+    height: number
+    overlay: number
+    imageFit: 'cover' | 'contain'
+  }
   title: number
   heading: number
   notes: number

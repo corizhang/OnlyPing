@@ -1,6 +1,6 @@
 [package]
 name = "onlyping"
-version = "0.1.3-alpha.1"
+version = "0.1.4-alpha.1"
 description = "OnlyPing screenshot annotation and step documentation workspace"
 authors = ["OnlyPing contributors"]
 license = ""

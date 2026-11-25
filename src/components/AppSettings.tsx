@@ -1,4 +1,5 @@
 import AppUpdateCard from './AppUpdateCard'
+import DocumentLayoutSettings from './DocumentLayoutSettings'
 import { appUpdates } from '@/lib/desktop-updates'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Monitor, FolderOpen, SlidersHorizontal, ImageDown, Sparkles, Info, RotateCcw } from 'lucide-react'
@@ -11,12 +12,12 @@ import { isDesktop } from '@/lib/files'
 import { workspaceInvoke, type WorkspaceInfo } from '@/lib/workspace'
 import type { DesktopInfo, DesktopPreferences } from '@/lib/desktop-lifecycle'
 import { readImageExportPreferences, saveImageExportPreferences, defaultImageExportPreferences } from '@/lib/image-export-preferences'
-import type { AIConfig } from '@/types'
+import type { AIConfig, ExportFooter, ExportStyle } from '@/types'
 import packageInfo from '../../package.json'
 
 const sections = [
   ['general', '常规', Monitor], ['storage', '项目与存储', FolderOpen], ['editor', '编辑器', SlidersHorizontal],
-  ['export', '图片导出', ImageDown], ['ai', 'AI 与隐私', Sparkles], ['about', '关于', Info],
+  ['document', '文档排版', SlidersHorizontal], ['export', '图片导出', ImageDown], ['ai', 'AI 与隐私', Sparkles], ['about', '关于', Info],
 ] as const
 export type SettingsSection = typeof sections[number][0]
 interface Props {
@@ -37,6 +38,11 @@ interface Props {
   autoScan: boolean
   onAutoScanChange: (value: boolean) => void
   aiBusy: boolean
+  exportStyle: ExportStyle
+  exportFooter: ExportFooter
+  onExportStyleChange: (value: ExportStyle) => void
+  onExportFooterChange: (value: ExportFooter) => void
+  onDocumentPreview?: () => void
 }
 const selectClass = 'h-9 min-w-40 rounded border border-white/15 bg-[#303030] px-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500'
 function Row({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
@@ -107,8 +113,13 @@ export default function AppSettings(props: Props) {
           {([['tools', '恢复默认工具顺序'], ['styles', '恢复所有工具默认样式'], ['layout', '恢复面板布局']] as const).map(([key, label]) => <Row key={key} title={label} description={key === 'styles' ? '仅影响新建标注，已有标注和样式预设不变。' : undefined}><Button variant="ghost" onClick={() => setConfirmReset(key)}><RotateCcw className="size-4" />恢复默认</Button></Row>)}
           {confirmReset && <div role="alert" className="mt-4 space-y-3 rounded border border-amber-400/30 p-4"><p className="text-sm">确认恢复{confirmReset === 'styles' ? '所有工具默认样式' : confirmReset === 'tools' ? '默认工具顺序' : '面板布局'}？</p><div className="flex gap-2"><Button size="sm" onClick={() => { if (confirmReset === 'styles') props.onResetStyles(); else if (confirmReset === 'tools') props.onResetTools(); else props.onResetLayout(); setConfirmReset(null); setNote('已恢复默认') }}>确认恢复</Button><Button size="sm" variant="ghost" onClick={() => setConfirmReset(null)}>取消</Button></div></div>}
         </>}
+        {section === 'document' && <>
+          <div className="mb-5 flex items-center justify-between gap-4"><p className="text-xs leading-relaxed text-[#999]">当前项目的布局、头部和文字样式。可在预览中直接调整。</p>{props.onDocumentPreview && <Button size="sm" variant="outline" onClick={() => { props.onClose(); props.onDocumentPreview?.() }}>打开预览</Button>}</div>
+          <DocumentLayoutSettings style={props.exportStyle} onChange={props.onExportStyleChange} footer={props.exportFooter} onFooterChange={props.onExportFooterChange} />
+        </>}
         {section === 'export' && <>
-          <p className="mt-2 text-xs leading-relaxed text-[#aaa]">用于单张或批量标注图片导出。导出窗口仍可临时调整；文档排版样式随项目保存。</p>
+          <h3 className="mt-7 border-b border-white/10 pb-2 text-sm font-medium text-white">图片导出默认值</h3>
+          <p className="mt-2 text-xs leading-relaxed text-[#aaa]">用于单张或批量标注图片导出。每次导出仍可临时调整。</p>
           <Row title="图片格式"><select aria-label="默认图片格式" className={selectClass} value={options.format} onChange={e => setOptions({ ...options, format: e.target.value as 'png' | 'jpeg' })}><option value="png">PNG · 无损透明</option><option value="jpeg">JPEG · 白色背景</option></select></Row>
           <Row title="JPEG 质量" description="质量越高，文件通常越大。"><Input aria-label="默认 JPEG 质量" type="number" min={1} max={100} className="w-24" disabled={options.format !== 'jpeg'} value={options.quality} onChange={e => setOptions({ ...options, quality: Number(e.target.value) })} /></Row>
           <Row title="图片尺寸"><select aria-label="默认图片尺寸" className={selectClass} value={options.size.mode} onChange={e => setOptions({ ...options, size: e.target.value === 'original' ? { mode: 'original' } : { mode: e.target.value as 'percent' | 'maxWidth', value: Number(sizeValue) } })}><option value="original">原始尺寸</option><option value="percent">按百分比缩小</option><option value="maxWidth">限制最大宽度</option></select></Row>
@@ -124,6 +135,6 @@ export default function AppSettings(props: Props) {
         </>}
         {section === 'about' && <div className="mt-6 space-y-4"><div className="text-2xl font-semibold text-white">OnlyPing <span className="ml-2 text-sm font-normal text-[#aaa]">{packageInfo.version}</span></div><p className="text-sm text-[#aaa]">截图标注与步骤说明工作台</p><p className="text-xs text-[#999]">运行环境：{desktop ? 'Tauri 桌面应用' : '浏览器'}</p><p className="break-all text-xs text-[#999]">项目地址：https://github.com/corizhang/OnlyPing</p>{desktop && <AppUpdateCard />}</div>}
       </main></div>
-    <footer className="flex h-14 shrink-0 items-center justify-between gap-4 border-t border-white/10 px-6"><p role="status" className="min-w-0 text-xs text-[#aaa]">{note || '常规设置即时保存；AI 和导出配置请点击各自的保存按钮。'}</p><div className="flex shrink-0 gap-2">{desktop && <Button variant="ghost" size="sm" disabled={busy || updating} onClick={() => setAttempt(n => n + 1)}>重新读取</Button>}<Button variant="outline" disabled={busy || updating} onClick={props.onClose}>完成</Button></div></footer>
+    <footer className="flex h-14 shrink-0 items-center justify-between gap-4 border-t border-white/10 px-6"><p role="status" className="min-w-0 text-xs text-[#aaa]">{note || '项目版式会随当前项目自动保存；图片导出默认值请点击保存。'}</p><div className="flex shrink-0 gap-2">{desktop && <Button variant="ghost" size="sm" disabled={busy || updating} onClick={() => setAttempt(n => n + 1)}>重新读取</Button>}<Button variant="outline" disabled={busy || updating} onClick={props.onClose}>完成</Button></div></footer>
   </DialogContent></Dialog>
 }
