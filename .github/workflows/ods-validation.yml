@@ -22,14 +22,8 @@ jobs:
           python-version: '3.x'
       - name: Validate product metadata and version
         run: |
-          python -m json.tool onlytools.config.json > /dev/null
+          python scripts/ods.py validate-config --config onlytools.config.json
           python scripts/check_product_version.py --version "$(node -p 'require("./package.json").version')"
       - name: Validate changelog structure
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          body = Path("CHANGELOG.md").read_text(encoding="utf-8")
-          assert "## [Unreleased]" in body
-          assert "{{" not in body
-          print("CHANGELOG structure OK")
-          PY
+          python scripts/ods.py validate-changelog --changelog CHANGELOG.md --structure-only
