@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "product": {
+    "name": "OnlyPing",
+    "slug": "onlyping",
+    "tagline": "截图步骤标注与操作指引制作",
+    "description": "支持多步骤截图标注、说明编辑及 PNG、PDF、Word 导出",
+    "category": "Image Tools",
+    "status": "alpha",
+    "platforms": [
+      "Windows"
+    ],
+    "architectures": [
+      "x64"
+    ]
+  },
+  "repository": {
+    "owner": "onlytools-lab",
+    "name": "onlyping",
+    "url": "https://github.com/onlytools-lab/onlyping"
+  },
+  "release": {
+    "tagPrefix": "v",
+    "titleFormat": "{product} v{version}",
+    "requireSha256": true,
+    "assetNaming": "OnlyPing_{version}_x64-setup.exe"
+  },
+  "build": {
+    "commands": {
+      "test": "npm test",
+      "build": "npm run desktop:build"
+    },
+    "versionFiles": [
+      "package.json",
+      "src-tauri/tauri.conf.json"
+    ],
+    "artifactsPath": "src-tauri/target/release/bundle/nsis"
+  },
+  "documentation": {
+    "language": "zh-CN",
+    "readme": "README.md",
+    "changelog": "CHANGELOG.md"
+  }
+}

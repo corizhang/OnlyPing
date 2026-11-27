@@ -1,0 +1,29 @@
+name: ONLYTOOLS Standard Validation
+on:
+  pull_request:
+    paths:
+      - 'onlytools.config.json'
+      - 'CHANGELOG.md'
+      - 'README.md'
+      - 'scripts/check_product_version.py'
+      - '.github/workflows/ods-validation.yml'
+      - 'package.json'
+      - 'src-tauri/tauri.conf.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate product metadata and version
+        run: |
+          python scripts/ods.py validate-config --config onlytools.config.json
+          python scripts/check_product_version.py --version "$(node -p 'require("./package.json").version')"
+      - name: Validate changelog structure
+        run: |
+          python scripts/ods.py validate-changelog --changelog CHANGELOG.md --structure-only
