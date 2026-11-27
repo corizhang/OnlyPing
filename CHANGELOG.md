@@ -3,12 +3,6 @@
 ## [Unreleased]
 
 ### Added
-- 接入 ONLYTOOLS Standard 质量检查与版本一致性验证（不改变产品功能）。
+- 接入 ONLYTOOLS Standard 产品元数据和只读版本一致性检查（仅工程治理，不修改产品功能）。
 
-## [0.1.4-alpha.1] - 2026-11-27
-
-### Changed
-- 当前版本号取自 package.json 与 Tauri 配置；本章节仅记录版本基线，不代表正式发布。
-
-[Unreleased]: https://github.com/onlytools-lab/onlyping/compare/v0.1.4-alpha.1...HEAD
-[0.1.4-alpha.1]: https://github.com/onlytools-lab/onlyping/releases/tag/v0.1.4-alpha.1
+> 历史版本记录尚未从既有发布资料核实，暂不补写历史发布日期或发布链接。
